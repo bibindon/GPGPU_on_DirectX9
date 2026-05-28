@@ -2,4 +2,7 @@
 # この .gitignore ファイルは Microsoft(R) Visual Studio によって自動的に作成されました。
 ################################################################################
 
-/.vs
+.vs
+Release
+Debug
+packages
