@@ -26,21 +26,33 @@ const int CLOTH_VERTEX_COUNT_Z = 16;
 const float CLOTH_SIZE = 4.0f;
 const float CLOTH_START_Y = 1.1f;
 const float SPHERE_DISPLAY_RADIUS = 1.0f;
+const float CLOTH_COLLISION_RADIUS = 1.1f;
 const float CAMERA_MIN_PITCH = -1.3f;
 const float CAMERA_MAX_PITCH = 1.3f;
 const float CAMERA_MIN_DISTANCE = 2.0f;
 const float CAMERA_MAX_DISTANCE = 20.0f;
+const int SETTINGS_COMBO_ID = 1001;
+
+enum SimulationMode
+{
+    SIMULATION_MODE_CPU = 0,
+    SIMULATION_MODE_CPU_OPENMP,
+    SIMULATION_MODE_GPU
+};
 
 LPDIRECT3D9 g_pD3D = NULL;
 LPDIRECT3DDEVICE9 g_pd3dDevice = NULL;
 LPD3DXFONT g_pFont = NULL;
 LPD3DXEFFECT g_pEffect = NULL;
+HWND g_hSettingsWnd = NULL;
+HWND g_hSimulationCombo = NULL;
 bool g_bClose = false;
 bool g_bCameraDragging = false;
 POINT g_lastMousePosition { };
 float g_cameraYaw = 0.0f;
 float g_cameraPitch = 0.35f;
 float g_cameraDistance = 8.5f;
+SimulationMode g_simulationMode = SIMULATION_MODE_CPU;
 
 struct MeshModel
 {
@@ -79,10 +91,14 @@ static void UpdateClothNormals();
 static void WriteClothMeshVertices();
 static int GetClothIndex(int x, int z);
 static void BuildCameraViewMatrix(D3DXMATRIX* pView);
+static void CreateSettingsWindow(HINSTANCE hInstance);
+static bool IsOpenMPSimulationEnabled();
+static void UpdateSimulationModeFromCombo();
 static void InitD3D(HWND hWnd);
 static void Cleanup();
 static void Render();
 LRESULT WINAPI MsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+LRESULT WINAPI SettingsMsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 extern int WINAPI _tWinMain(_In_ HINSTANCE hInstance,
                             _In_opt_ HINSTANCE hPrevInstance,
@@ -134,6 +150,7 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance,
                              NULL);
 
     InitD3D(hWnd);
+    CreateSettingsWindow(wc.hInstance);
     ShowWindow(hWnd, SW_SHOWDEFAULT);
     UpdateWindow(hWnd);
 
@@ -348,6 +365,13 @@ void CleanupMeshModel(MeshModel* pModel)
 
 void Cleanup()
 {
+    if (g_hSettingsWnd != NULL)
+    {
+        DestroyWindow(g_hSettingsWnd);
+        g_hSettingsWnd = NULL;
+        g_hSimulationCombo = NULL;
+    }
+
     CleanupMeshModel(&g_clothModel);
     CleanupMeshModel(&g_sphereModel);
     g_clothParticles.clear();
@@ -505,18 +529,40 @@ void UpdateClothSimulation()
     const float damping = 0.995f;
     const int constraintIterations = 8;
 
-    for (auto& particle : g_clothParticles)
+    if (IsOpenMPSimulationEnabled())
     {
-        if (particle.bFixed)
-        {
-            continue;
-        }
+        int particleCount = (int)g_clothParticles.size();
 
-        D3DXVECTOR3 velocity = (particle.position - particle.previousPosition) * damping;
-        D3DXVECTOR3 nextPosition = particle.position + velocity + gravity * deltaTime * deltaTime;
-        particle.previousPosition = particle.position;
-        particle.position = nextPosition;
-        ApplySphereCollision(&particle.position);
+#pragma omp parallel for
+        for (int i = 0; i < particleCount; i++)
+        {
+            ClothParticle& particle = g_clothParticles[i];
+
+            if (!particle.bFixed)
+            {
+                D3DXVECTOR3 velocity = (particle.position - particle.previousPosition) * damping;
+                D3DXVECTOR3 nextPosition = particle.position + velocity + gravity * deltaTime * deltaTime;
+                particle.previousPosition = particle.position;
+                particle.position = nextPosition;
+                ApplySphereCollision(&particle.position);
+            }
+        }
+    }
+    else
+    {
+        for (auto& particle : g_clothParticles)
+        {
+            if (particle.bFixed)
+            {
+                continue;
+            }
+
+            D3DXVECTOR3 velocity = (particle.position - particle.previousPosition) * damping;
+            D3DXVECTOR3 nextPosition = particle.position + velocity + gravity * deltaTime * deltaTime;
+            particle.previousPosition = particle.position;
+            particle.position = nextPosition;
+            ApplySphereCollision(&particle.position);
+        }
     }
 
     for (int iteration = 0; iteration < constraintIterations; iteration++)
@@ -537,9 +583,22 @@ void UpdateClothSimulation()
             }
         }
 
-        for (auto& particle : g_clothParticles)
+        if (IsOpenMPSimulationEnabled())
         {
-            ApplySphereCollision(&particle.position);
+            int particleCount = (int)g_clothParticles.size();
+
+#pragma omp parallel for
+            for (int i = 0; i < particleCount; i++)
+            {
+                ApplySphereCollision(&g_clothParticles[i].position);
+            }
+        }
+        else
+        {
+            for (auto& particle : g_clothParticles)
+            {
+                ApplySphereCollision(&particle.position);
+            }
         }
     }
 
@@ -581,7 +640,7 @@ void ApplySphereCollision(D3DXVECTOR3* pPosition)
 {
     float distance = D3DXVec3Length(pPosition);
 
-    if (distance >= SPHERE_DISPLAY_RADIUS)
+    if (distance >= CLOTH_COLLISION_RADIUS)
     {
         return;
     }
@@ -589,20 +648,33 @@ void ApplySphereCollision(D3DXVECTOR3* pPosition)
     if (distance <= 0.0001f)
     {
         pPosition->x = 0.0f;
-        pPosition->y = SPHERE_DISPLAY_RADIUS;
+        pPosition->y = CLOTH_COLLISION_RADIUS;
         pPosition->z = 0.0f;
         return;
     }
 
     D3DXVECTOR3 normal = *pPosition / distance;
-    *pPosition = normal * SPHERE_DISPLAY_RADIUS;
+    *pPosition = normal * CLOTH_COLLISION_RADIUS;
 }
 
 void UpdateClothNormals()
 {
-    for (auto& particle : g_clothParticles)
+    if (IsOpenMPSimulationEnabled())
     {
-        particle.normal = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
+        int particleCount = (int)g_clothParticles.size();
+
+#pragma omp parallel for
+        for (int i = 0; i < particleCount; i++)
+        {
+            g_clothParticles[i].normal = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
+        }
+    }
+    else
+    {
+        for (auto& particle : g_clothParticles)
+        {
+            particle.normal = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
+        }
     }
 
     for (int z = 0; z < CLOTH_VERTEX_COUNT_Z - 1; z++)
@@ -633,17 +705,39 @@ void UpdateClothNormals()
         }
     }
 
-    for (auto& particle : g_clothParticles)
+    if (IsOpenMPSimulationEnabled())
     {
-        float length = D3DXVec3Length(&particle.normal);
+        int particleCount = (int)g_clothParticles.size();
 
-        if (length <= 0.0001f)
+#pragma omp parallel for
+        for (int i = 0; i < particleCount; i++)
         {
-            particle.normal = D3DXVECTOR3(0.0f, 1.0f, 0.0f);
+            float length = D3DXVec3Length(&g_clothParticles[i].normal);
+
+            if (length <= 0.0001f)
+            {
+                g_clothParticles[i].normal = D3DXVECTOR3(0.0f, 1.0f, 0.0f);
+            }
+            else
+            {
+                D3DXVec3Normalize(&g_clothParticles[i].normal, &g_clothParticles[i].normal);
+            }
         }
-        else
+    }
+    else
+    {
+        for (auto& particle : g_clothParticles)
         {
-            D3DXVec3Normalize(&particle.normal, &particle.normal);
+            float length = D3DXVec3Length(&particle.normal);
+
+            if (length <= 0.0001f)
+            {
+                particle.normal = D3DXVECTOR3(0.0f, 1.0f, 0.0f);
+            }
+            else
+            {
+                D3DXVec3Normalize(&particle.normal, &particle.normal);
+            }
         }
     }
 }
@@ -656,14 +750,32 @@ void WriteClothMeshVertices()
     hResult = g_clothModel.pMesh->LockVertexBuffer(0, (void**)&pVertices);
     assert(hResult == S_OK);
 
-    for (DWORD i = 0; i < g_clothModel.pMesh->GetNumVertices(); i++)
-    {
-        BYTE* pVertex = pVertices + g_clothVertexStride * i;
-        D3DXVECTOR3* pPosition = (D3DXVECTOR3*)(pVertex + g_clothPositionOffset);
-        D3DXVECTOR3* pNormal = (D3DXVECTOR3*)(pVertex + g_clothNormalOffset);
+    int vertexCount = (int)g_clothModel.pMesh->GetNumVertices();
 
-        *pPosition = g_clothParticles[i].position;
-        *pNormal = g_clothParticles[i].normal;
+    if (IsOpenMPSimulationEnabled())
+    {
+#pragma omp parallel for
+        for (int i = 0; i < vertexCount; i++)
+        {
+            BYTE* pVertex = pVertices + g_clothVertexStride * i;
+            D3DXVECTOR3* pPosition = (D3DXVECTOR3*)(pVertex + g_clothPositionOffset);
+            D3DXVECTOR3* pNormal = (D3DXVECTOR3*)(pVertex + g_clothNormalOffset);
+
+            *pPosition = g_clothParticles[i].position;
+            *pNormal = g_clothParticles[i].normal;
+        }
+    }
+    else
+    {
+        for (int i = 0; i < vertexCount; i++)
+        {
+            BYTE* pVertex = pVertices + g_clothVertexStride * i;
+            D3DXVECTOR3* pPosition = (D3DXVECTOR3*)(pVertex + g_clothPositionOffset);
+            D3DXVECTOR3* pNormal = (D3DXVECTOR3*)(pVertex + g_clothNormalOffset);
+
+            *pPosition = g_clothParticles[i].position;
+            *pNormal = g_clothParticles[i].normal;
+        }
     }
 
     hResult = g_clothModel.pMesh->UnlockVertexBuffer();
@@ -673,6 +785,34 @@ void WriteClothMeshVertices()
 int GetClothIndex(int x, int z)
 {
     return z * CLOTH_VERTEX_COUNT_X + x;
+}
+
+bool IsOpenMPSimulationEnabled()
+{
+    return g_simulationMode == SIMULATION_MODE_CPU_OPENMP;
+}
+
+void UpdateSimulationModeFromCombo()
+{
+    if (g_hSimulationCombo == NULL)
+    {
+        return;
+    }
+
+    LRESULT selectedIndex = SendMessage(g_hSimulationCombo, CB_GETCURSEL, 0, 0);
+
+    if (selectedIndex == SIMULATION_MODE_CPU_OPENMP)
+    {
+        g_simulationMode = SIMULATION_MODE_CPU_OPENMP;
+    }
+    else if (selectedIndex == SIMULATION_MODE_GPU)
+    {
+        g_simulationMode = SIMULATION_MODE_GPU;
+    }
+    else
+    {
+        g_simulationMode = SIMULATION_MODE_CPU;
+    }
 }
 
 void BuildCameraViewMatrix(D3DXMATRIX* pView)
@@ -687,6 +827,74 @@ void BuildCameraViewMatrix(D3DXMATRIX* pView)
     eye.z = -g_cameraDistance * cosf(g_cameraYaw) * cosPitch;
 
     D3DXMatrixLookAtLH(pView, &eye, &target, &up);
+}
+
+void CreateSettingsWindow(HINSTANCE hInstance)
+{
+    WNDCLASSEX wc { };
+    wc.cbSize = sizeof(WNDCLASSEX);
+    wc.style = CS_CLASSDC;
+    wc.lpfnWndProc = SettingsMsgProc;
+    wc.cbClsExtra = 0;
+    wc.cbWndExtra = 0;
+    wc.hInstance = hInstance;
+    wc.hIcon = NULL;
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.lpszMenuName = NULL;
+    wc.lpszClassName = _T("SettingsWindow");
+    wc.hIconSm = NULL;
+
+    RegisterClassEx(&wc);
+
+    g_hSettingsWnd = CreateWindow(_T("SettingsWindow"),
+                                  _T("設定"),
+                                  WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+                                  CW_USEDEFAULT,
+                                  CW_USEDEFAULT,
+                                  260,
+                                  120,
+                                  NULL,
+                                  NULL,
+                                  hInstance,
+                                  NULL);
+
+    assert(g_hSettingsWnd != NULL);
+
+    HWND hLabel = CreateWindow(_T("STATIC"),
+                               _T("Simulation"),
+                               WS_CHILD | WS_VISIBLE,
+                               16,
+                               18,
+                               100,
+                               22,
+                               g_hSettingsWnd,
+                               NULL,
+                               hInstance,
+                               NULL);
+    assert(hLabel != NULL);
+
+    g_hSimulationCombo = CreateWindow(_T("COMBOBOX"),
+                                      NULL,
+                                      WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
+                                      112,
+                                      14,
+                                      120,
+                                      120,
+                                      g_hSettingsWnd,
+                                      (HMENU)(INT_PTR)SETTINGS_COMBO_ID,
+                                      hInstance,
+                                      NULL);
+    assert(g_hSimulationCombo != NULL);
+
+    SendMessage(g_hSimulationCombo, CB_ADDSTRING, 0, (LPARAM)_T("CPU"));
+    SendMessage(g_hSimulationCombo, CB_ADDSTRING, 0, (LPARAM)_T("CPU_OPENMP"));
+    SendMessage(g_hSimulationCombo, CB_ADDSTRING, 0, (LPARAM)_T("GPU"));
+    SendMessage(g_hSimulationCombo, CB_SETCURSEL, 0, 0);
+    UpdateSimulationModeFromCombo();
+
+    ShowWindow(g_hSettingsWnd, SW_SHOWDEFAULT);
+    UpdateWindow(g_hSettingsWnd);
 }
 
 LRESULT WINAPI MsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -756,6 +964,43 @@ LRESULT WINAPI MsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     {
         PostQuitMessage(0);
         g_bClose = true;
+        return 0;
+    }
+    }
+
+    return DefWindowProc(hWnd, msg, wParam, lParam);
+}
+
+LRESULT WINAPI SettingsMsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    switch (msg)
+    {
+    case WM_COMMAND:
+    {
+        int controlId = LOWORD(wParam);
+        int notification = HIWORD(wParam);
+
+        if (controlId == SETTINGS_COMBO_ID && notification == CBN_SELCHANGE)
+        {
+            UpdateSimulationModeFromCombo();
+            return 0;
+        }
+
+        break;
+    }
+    case WM_CLOSE:
+    {
+        ShowWindow(hWnd, SW_HIDE);
+        return 0;
+    }
+    case WM_DESTROY:
+    {
+        if (hWnd == g_hSettingsWnd)
+        {
+            g_hSettingsWnd = NULL;
+            g_hSimulationCombo = NULL;
+        }
+
         return 0;
     }
     }
