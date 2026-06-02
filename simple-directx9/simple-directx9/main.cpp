@@ -85,7 +85,7 @@ static void CleanupMeshModel(MeshModel* pModel);
 static void DrawMeshModel(MeshModel* pModel, const D3DXMATRIX& world, const D3DXMATRIX& viewProj);
 static void InitializeClothSimulation();
 static void UpdateClothSimulation();
-static void SatisfyClothConstraint(int indexA, int indexB);
+static void SatisfyClothConstraint(int indexA, int indexB, float restLength);
 static void ApplySphereCollision(D3DXVECTOR3* pPosition);
 static void UpdateClothNormals();
 static void WriteClothMeshVertices();
@@ -528,6 +528,8 @@ void UpdateClothSimulation()
     const float deltaTime = 1.0f / 60.0f;
     const float damping = 0.995f;
     const int constraintIterations = 8;
+    const float structuralRestLength = CLOTH_SIZE / (float)(CLOTH_VERTEX_COUNT_X - 1);
+    const float shearRestLength = structuralRestLength * sqrtf(2.0f);
 
     if (IsOpenMPSimulationEnabled())
     {
@@ -573,12 +575,18 @@ void UpdateClothSimulation()
             {
                 if (x + 1 < CLOTH_VERTEX_COUNT_X)
                 {
-                    SatisfyClothConstraint(GetClothIndex(x, z), GetClothIndex(x + 1, z));
+                    SatisfyClothConstraint(GetClothIndex(x, z), GetClothIndex(x + 1, z), structuralRestLength);
                 }
 
                 if (z + 1 < CLOTH_VERTEX_COUNT_Z)
                 {
-                    SatisfyClothConstraint(GetClothIndex(x, z), GetClothIndex(x, z + 1));
+                    SatisfyClothConstraint(GetClothIndex(x, z), GetClothIndex(x, z + 1), structuralRestLength);
+                }
+
+                if (x + 1 < CLOTH_VERTEX_COUNT_X && z + 1 < CLOTH_VERTEX_COUNT_Z)
+                {
+                    SatisfyClothConstraint(GetClothIndex(x, z), GetClothIndex(x + 1, z + 1), shearRestLength);
+                    SatisfyClothConstraint(GetClothIndex(x + 1, z), GetClothIndex(x, z + 1), shearRestLength);
                 }
             }
         }
@@ -606,9 +614,8 @@ void UpdateClothSimulation()
     WriteClothMeshVertices();
 }
 
-void SatisfyClothConstraint(int indexA, int indexB)
+void SatisfyClothConstraint(int indexA, int indexB, float restLength)
 {
-    float restLength = CLOTH_SIZE / (float)(CLOTH_VERTEX_COUNT_X - 1);
     ClothParticle& particleA = g_clothParticles[indexA];
     ClothParticle& particleB = g_clothParticles[indexB];
     D3DXVECTOR3 delta = particleB.position - particleA.position;
