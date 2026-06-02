@@ -33,7 +33,7 @@ void PixelShader1(in float4 inScreenColor : COLOR0,
 {
     float4 workColor = (float4)0;
     workColor = tex2D(textureSampler, inTexCood);
-    outColor = inScreenColor * workColor;
+    outColor = inScreenColor * workColor + 0.3f;
 }
 
 technique Technique1
