@@ -9,6 +9,30 @@ sampler textureSampler = sampler_state {
     MagFilter = LINEAR;
 };
 
+texture g_gpuCurrentPositionTexture;
+sampler g_gpuCurrentPositionSampler = sampler_state {
+    Texture = (g_gpuCurrentPositionTexture);
+    AddressU = CLAMP;
+    AddressV = CLAMP;
+    MipFilter = POINT;
+    MinFilter = POINT;
+    MagFilter = POINT;
+};
+
+texture g_gpuPreviousPositionTexture;
+sampler g_gpuPreviousPositionSampler = sampler_state {
+    Texture = (g_gpuPreviousPositionTexture);
+    AddressU = CLAMP;
+    AddressV = CLAMP;
+    MipFilter = POINT;
+    MinFilter = POINT;
+    MagFilter = POINT;
+};
+
+float g_gpuDeltaTime = 0.0166667f;
+float g_gpuDamping = 0.995f;
+float g_gpuCollisionRadius = 1.1f;
+
 void VertexShader1(in  float4 inPosition  : POSITION,
                    in  float4 inNormal    : NORMAL0,
                    in  float4 inTexCood   : TEXCOORD0,
@@ -36,11 +60,45 @@ void PixelShader1(in float4 inScreenColor : COLOR0,
     outColor = inScreenColor * workColor + 0.3f;
 }
 
+void GpuClothUpdatePixelShader(in float2 inTexCood : TEXCOORD0,
+                               out float4 outColor : COLOR)
+{
+    float3 currentPosition = tex2D(g_gpuCurrentPositionSampler, inTexCood).xyz;
+    float3 previousPosition = tex2D(g_gpuPreviousPositionSampler, inTexCood).xyz;
+    float3 gravity = float3(0.0f, -9.8f, 0.0f);
+    float3 velocity = (currentPosition - previousPosition) * g_gpuDamping;
+    float3 nextPosition = currentPosition + velocity + gravity * g_gpuDeltaTime * g_gpuDeltaTime;
+    float distanceFromSphereCenter = length(nextPosition);
+
+    if (distanceFromSphereCenter < g_gpuCollisionRadius)
+    {
+        if (distanceFromSphereCenter <= 0.0001f)
+        {
+            nextPosition = float3(0.0f, g_gpuCollisionRadius, 0.0f);
+        }
+        else
+        {
+            nextPosition = nextPosition / distanceFromSphereCenter * g_gpuCollisionRadius;
+        }
+    }
+
+    outColor = float4(nextPosition, 1.0f);
+}
+
 technique Technique1
 {
    pass Pass1
    {
       VertexShader = compile vs_2_0 VertexShader1();
       PixelShader = compile ps_2_0 PixelShader1();
+   }
+}
+
+technique GpuClothUpdateTechnique
+{
+   pass Pass1
+   {
+      VertexShader = NULL;
+      PixelShader = compile ps_2_0 GpuClothUpdatePixelShader();
    }
 }

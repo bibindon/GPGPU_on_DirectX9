@@ -23,6 +23,7 @@ const int WINDOW_SIZE_W = 1600;
 const int WINDOW_SIZE_H = 900;
 const int CLOTH_VERTEX_COUNT_X = 16;
 const int CLOTH_VERTEX_COUNT_Z = 16;
+const int CLOTH_PARTICLE_COUNT = CLOTH_VERTEX_COUNT_X * CLOTH_VERTEX_COUNT_Z;
 const float CLOTH_SIZE = 4.0f;
 const float CLOTH_START_Y = 1.1f;
 const float SPHERE_DISPLAY_RADIUS = 1.0f;
@@ -47,6 +48,10 @@ LPD3DXFONT g_pFont = NULL;
 LPD3DXEFFECT g_pEffect = NULL;
 HWND g_hSettingsWnd = NULL;
 HWND g_hSimulationCombo = NULL;
+LPDIRECT3DTEXTURE9 g_pGpuCurrentPositionTexture = NULL;
+LPDIRECT3DTEXTURE9 g_pGpuPreviousPositionTexture = NULL;
+LPDIRECT3DTEXTURE9 g_pGpuNextPositionTexture = NULL;
+LPDIRECT3DSURFACE9 g_pGpuReadbackSurface = NULL;
 bool g_bClose = false;
 bool g_bCameraDragging = false;
 POINT g_lastMousePosition { };
@@ -54,6 +59,7 @@ float g_cameraYaw = 0.0f;
 float g_cameraPitch = 0.35f;
 float g_cameraDistance = 8.5f;
 SimulationMode g_simulationMode = SIMULATION_MODE_CPU_OPENMP;
+SimulationMode g_previousSimulationMode = SIMULATION_MODE_CPU_OPENMP;
 
 struct MeshModel
 {
@@ -80,12 +86,33 @@ DWORD g_clothNormalOffset = 0;
 DWORD g_clothVertexStride = 0;
 bool g_bClothReady = false;
 
+struct GpuClothTexel
+{
+    float x;
+    float y;
+    float z;
+    float w;
+};
+
+struct ScreenVertex
+{
+    float x;
+    float y;
+    float z;
+    float rhw;
+    float u;
+    float v;
+};
+
 static void TextDraw(LPD3DXFONT pFont, TCHAR* text, int X, int Y);
 static void LoadMeshModel(LPCTSTR pFileName, MeshModel* pModel);
 static void CleanupMeshModel(MeshModel* pModel);
 static void DrawMeshModel(MeshModel* pModel, const D3DXMATRIX& world, const D3DXMATRIX& viewProj);
 static void InitializeClothSimulation();
 static void UpdateClothSimulation();
+static void UpdateClothSimulationGpu();
+static void UpdateClothSimulationCpuBody(bool bUseOpenMP);
+static void ApplyClothConstraints();
 static void SatisfyClothConstraint(int indexA, int indexB, float restLength);
 static void ApplySphereCollision(D3DXVECTOR3* pPosition);
 static void UpdateClothNormals();
@@ -93,7 +120,16 @@ static void WriteClothMeshVertices();
 static int GetClothIndex(int x, int z);
 static void BuildCameraViewMatrix(D3DXMATRIX* pView);
 static void CreateSettingsWindow(HINSTANCE hInstance);
+static void CreateGpuClothResources();
+static void CleanupGpuClothResources();
+static void UploadGpuClothTexture(LPDIRECT3DTEXTURE9 pTexture, bool bUsePreviousPosition);
+static void UploadGpuClothTextures();
+static void UploadGpuClothCurrentTexture();
+static bool DownloadGpuClothPositions();
+static void RenderGpuClothPass();
 static bool IsOpenMPSimulationEnabled();
+static bool IsGpuSimulationEnabled();
+static LPCTSTR GetSimulationModeText();
 static void UpdateSimulationModeFromCombo();
 static void InitD3D(HWND hWnd);
 static void Cleanup();
@@ -273,6 +309,7 @@ void InitD3D(HWND hWnd)
     LoadMeshModel(_T("sphere.x"), &g_sphereModel);
     LoadMeshModel(_T("cloth16x16.x"), &g_clothModel);
     InitializeClothSimulation();
+    CreateGpuClothResources();
 
     hResult = D3DXCreateEffectFromFile(g_pd3dDevice,
                                        _T("simple.fx"),
@@ -373,6 +410,7 @@ void Cleanup()
         g_hSimulationCombo = NULL;
     }
 
+    CleanupGpuClothResources();
     CleanupMeshModel(&g_clothModel);
     CleanupMeshModel(&g_sphereModel);
     g_clothParticles.clear();
@@ -420,6 +458,9 @@ void Render()
     TCHAR msg[100];
     _tcscpy_s(msg, 100, _T("Xファイルの読み込みと表示"));
     TextDraw(g_pFont, msg, 0, 0);
+    _tcscpy_s(msg, 100, _T("Simulation: "));
+    _tcscat_s(msg, 100, GetSimulationModeText());
+    TextDraw(g_pFont, msg, 0, 24);
 
     hResult = g_pEffect->SetTechnique("Technique1");
     assert(hResult == S_OK);
@@ -516,6 +557,11 @@ void InitializeClothSimulation()
     g_bClothReady = true;
     UpdateClothNormals();
     WriteClothMeshVertices();
+
+    if (g_pGpuCurrentPositionTexture != NULL)
+    {
+        UploadGpuClothTextures();
+    }
 }
 
 void UpdateClothSimulation()
@@ -525,14 +571,22 @@ void UpdateClothSimulation()
         return;
     }
 
+    if (IsGpuSimulationEnabled())
+    {
+        UpdateClothSimulationGpu();
+        return;
+    }
+
+    UpdateClothSimulationCpuBody(IsOpenMPSimulationEnabled());
+}
+
+void UpdateClothSimulationCpuBody(bool bUseOpenMP)
+{
     const D3DXVECTOR3 gravity(0.0f, -9.8f, 0.0f);
     const float deltaTime = 1.0f / 60.0f;
     const float damping = 0.995f;
-    const int constraintIterations = 8;
-    const float structuralRestLength = CLOTH_SIZE / (float)(CLOTH_VERTEX_COUNT_X - 1);
-    const float shearRestLength = structuralRestLength * sqrtf(2.0f);
 
-    if (IsOpenMPSimulationEnabled())
+    if (bUseOpenMP)
     {
         int particleCount = (int)g_clothParticles.size();
 
@@ -567,6 +621,17 @@ void UpdateClothSimulation()
             ApplySphereCollision(&particle.position);
         }
     }
+
+    ApplyClothConstraints();
+    UpdateClothNormals();
+    WriteClothMeshVertices();
+}
+
+void ApplyClothConstraints()
+{
+    const int constraintIterations = 8;
+    const float structuralRestLength = CLOTH_SIZE / (float)(CLOTH_VERTEX_COUNT_X - 1);
+    const float shearRestLength = structuralRestLength * sqrtf(2.0f);
 
     for (int iteration = 0; iteration < constraintIterations; iteration++)
     {
@@ -610,9 +675,305 @@ void UpdateClothSimulation()
             }
         }
     }
+}
 
+void UpdateClothSimulationGpu()
+{
+    RenderGpuClothPass();
+
+    LPDIRECT3DTEXTURE9 pOldPreviousTexture = g_pGpuPreviousPositionTexture;
+    g_pGpuPreviousPositionTexture = g_pGpuCurrentPositionTexture;
+    g_pGpuCurrentPositionTexture = g_pGpuNextPositionTexture;
+    g_pGpuNextPositionTexture = pOldPreviousTexture;
+
+    if (!DownloadGpuClothPositions())
+    {
+        UpdateClothSimulationCpuBody(false);
+        UploadGpuClothTextures();
+        return;
+    }
+
+    ApplyClothConstraints();
     UpdateClothNormals();
     WriteClothMeshVertices();
+    UploadGpuClothCurrentTexture();
+}
+
+void CreateGpuClothResources()
+{
+    HRESULT hResult = E_FAIL;
+
+    hResult = g_pd3dDevice->CreateTexture(CLOTH_VERTEX_COUNT_X,
+                                          CLOTH_VERTEX_COUNT_Z,
+                                          1,
+                                          D3DUSAGE_RENDERTARGET,
+                                          D3DFMT_A32B32G32R32F,
+                                          D3DPOOL_DEFAULT,
+                                          &g_pGpuCurrentPositionTexture,
+                                          NULL);
+    assert(hResult == S_OK);
+
+    hResult = g_pd3dDevice->CreateTexture(CLOTH_VERTEX_COUNT_X,
+                                          CLOTH_VERTEX_COUNT_Z,
+                                          1,
+                                          D3DUSAGE_RENDERTARGET,
+                                          D3DFMT_A32B32G32R32F,
+                                          D3DPOOL_DEFAULT,
+                                          &g_pGpuPreviousPositionTexture,
+                                          NULL);
+    assert(hResult == S_OK);
+
+    hResult = g_pd3dDevice->CreateTexture(CLOTH_VERTEX_COUNT_X,
+                                          CLOTH_VERTEX_COUNT_Z,
+                                          1,
+                                          D3DUSAGE_RENDERTARGET,
+                                          D3DFMT_A32B32G32R32F,
+                                          D3DPOOL_DEFAULT,
+                                          &g_pGpuNextPositionTexture,
+                                          NULL);
+    assert(hResult == S_OK);
+
+    hResult = g_pd3dDevice->CreateOffscreenPlainSurface(CLOTH_VERTEX_COUNT_X,
+                                                        CLOTH_VERTEX_COUNT_Z,
+                                                        D3DFMT_A32B32G32R32F,
+                                                        D3DPOOL_SYSTEMMEM,
+                                                        &g_pGpuReadbackSurface,
+                                                        NULL);
+    assert(hResult == S_OK);
+
+    UploadGpuClothTextures();
+}
+
+void CleanupGpuClothResources()
+{
+    SAFE_RELEASE(g_pGpuReadbackSurface);
+    SAFE_RELEASE(g_pGpuNextPositionTexture);
+    SAFE_RELEASE(g_pGpuPreviousPositionTexture);
+    SAFE_RELEASE(g_pGpuCurrentPositionTexture);
+}
+
+void UploadGpuClothTexture(LPDIRECT3DTEXTURE9 pTexture, bool bUsePreviousPosition)
+{
+    HRESULT hResult = E_FAIL;
+    std::vector<GpuClothTexel> texels;
+    LPDIRECT3DSURFACE9 pSurface = NULL;
+
+    texels.resize(CLOTH_PARTICLE_COUNT);
+
+    for (int i = 0; i < CLOTH_PARTICLE_COUNT; i++)
+    {
+        D3DXVECTOR3 position = g_clothParticles[i].position;
+
+        if (bUsePreviousPosition)
+        {
+            position = g_clothParticles[i].previousPosition;
+        }
+
+        texels[i].x = position.x;
+        texels[i].y = position.y;
+        texels[i].z = position.z;
+        texels[i].w = 1.0f;
+    }
+
+    hResult = pTexture->GetSurfaceLevel(0, &pSurface);
+    assert(hResult == S_OK);
+
+    hResult = D3DXLoadSurfaceFromMemory(pSurface,
+                                        NULL,
+                                        NULL,
+                                        texels.data(),
+                                        D3DFMT_A32B32G32R32F,
+                                        sizeof(GpuClothTexel) * CLOTH_VERTEX_COUNT_X,
+                                        NULL,
+                                        NULL,
+                                        D3DX_FILTER_NONE,
+                                        0);
+    assert(hResult == S_OK);
+
+    SAFE_RELEASE(pSurface);
+}
+
+void UploadGpuClothTextures()
+{
+    if (g_pGpuCurrentPositionTexture == NULL ||
+        g_pGpuPreviousPositionTexture == NULL ||
+        g_pGpuNextPositionTexture == NULL)
+    {
+        return;
+    }
+
+    UploadGpuClothTexture(g_pGpuCurrentPositionTexture, false);
+    UploadGpuClothTexture(g_pGpuPreviousPositionTexture, true);
+    UploadGpuClothTexture(g_pGpuNextPositionTexture, false);
+}
+
+void UploadGpuClothCurrentTexture()
+{
+    UploadGpuClothTexture(g_pGpuCurrentPositionTexture, false);
+}
+
+bool DownloadGpuClothPositions()
+{
+    HRESULT hResult = E_FAIL;
+    LPDIRECT3DSURFACE9 pSurface = NULL;
+    D3DLOCKED_RECT lockedRect { };
+
+    hResult = g_pGpuCurrentPositionTexture->GetSurfaceLevel(0, &pSurface);
+    if (FAILED(hResult))
+    {
+        return false;
+    }
+
+    hResult = g_pd3dDevice->GetRenderTargetData(pSurface, g_pGpuReadbackSurface);
+    if (FAILED(hResult))
+    {
+        SAFE_RELEASE(pSurface);
+        return false;
+    }
+
+    hResult = g_pGpuReadbackSurface->LockRect(&lockedRect, NULL, D3DLOCK_READONLY);
+    if (FAILED(hResult))
+    {
+        SAFE_RELEASE(pSurface);
+        return false;
+    }
+
+    for (int z = 0; z < CLOTH_VERTEX_COUNT_Z; z++)
+    {
+        BYTE* pRow = (BYTE*)lockedRect.pBits + lockedRect.Pitch * z;
+        GpuClothTexel* pTexels = (GpuClothTexel*)pRow;
+
+        for (int x = 0; x < CLOTH_VERTEX_COUNT_X; x++)
+        {
+            int index = GetClothIndex(x, z);
+            D3DXVECTOR3 oldPosition = g_clothParticles[index].position;
+
+            g_clothParticles[index].previousPosition = oldPosition;
+            g_clothParticles[index].position = D3DXVECTOR3(pTexels[x].x, pTexels[x].y, pTexels[x].z);
+        }
+    }
+
+    hResult = g_pGpuReadbackSurface->UnlockRect();
+    assert(hResult == S_OK);
+
+    SAFE_RELEASE(pSurface);
+    return true;
+}
+
+void RenderGpuClothPass()
+{
+    HRESULT hResult = E_FAIL;
+    LPDIRECT3DSURFACE9 pOldRenderTarget = NULL;
+    LPDIRECT3DSURFACE9 pOldDepthStencil = NULL;
+    LPDIRECT3DSURFACE9 pNextSurface = NULL;
+    D3DVIEWPORT9 oldViewport { };
+    D3DVIEWPORT9 gpuViewport { };
+
+    hResult = g_pd3dDevice->GetRenderTarget(0, &pOldRenderTarget);
+    assert(hResult == S_OK);
+
+    hResult = g_pd3dDevice->GetDepthStencilSurface(&pOldDepthStencil);
+    assert(hResult == S_OK);
+
+    hResult = g_pd3dDevice->GetViewport(&oldViewport);
+    assert(hResult == S_OK);
+
+    hResult = g_pd3dDevice->SetTexture(0, NULL);
+    assert(hResult == S_OK);
+
+    hResult = g_pd3dDevice->SetTexture(1, NULL);
+    assert(hResult == S_OK);
+
+    hResult = g_pGpuNextPositionTexture->GetSurfaceLevel(0, &pNextSurface);
+    assert(hResult == S_OK);
+
+    hResult = g_pd3dDevice->SetRenderTarget(0, pNextSurface);
+    assert(hResult == S_OK);
+
+    hResult = g_pd3dDevice->SetDepthStencilSurface(NULL);
+    assert(hResult == S_OK);
+
+    gpuViewport.X = 0;
+    gpuViewport.Y = 0;
+    gpuViewport.Width = CLOTH_VERTEX_COUNT_X;
+    gpuViewport.Height = CLOTH_VERTEX_COUNT_Z;
+    gpuViewport.MinZ = 0.0f;
+    gpuViewport.MaxZ = 1.0f;
+    hResult = g_pd3dDevice->SetViewport(&gpuViewport);
+    assert(hResult == S_OK);
+
+    ScreenVertex vertices[4] =
+    {
+        { -0.5f, -0.5f, 0.0f, 1.0f, 0.0f, 0.0f },
+        { (float)CLOTH_VERTEX_COUNT_X - 0.5f, -0.5f, 0.0f, 1.0f, 1.0f, 0.0f },
+        { -0.5f, (float)CLOTH_VERTEX_COUNT_Z - 0.5f, 0.0f, 1.0f, 0.0f, 1.0f },
+        { (float)CLOTH_VERTEX_COUNT_X - 0.5f, (float)CLOTH_VERTEX_COUNT_Z - 0.5f, 0.0f, 1.0f, 1.0f, 1.0f },
+    };
+
+    hResult = g_pEffect->SetTechnique("GpuClothUpdateTechnique");
+    assert(hResult == S_OK);
+
+    hResult = g_pEffect->SetTexture("g_gpuCurrentPositionTexture", g_pGpuCurrentPositionTexture);
+    assert(hResult == S_OK);
+
+    hResult = g_pEffect->SetTexture("g_gpuPreviousPositionTexture", g_pGpuPreviousPositionTexture);
+    assert(hResult == S_OK);
+
+    hResult = g_pEffect->SetFloat("g_gpuDeltaTime", 1.0f / 60.0f);
+    assert(hResult == S_OK);
+
+    hResult = g_pEffect->SetFloat("g_gpuDamping", 0.995f);
+    assert(hResult == S_OK);
+
+    hResult = g_pEffect->SetFloat("g_gpuCollisionRadius", CLOTH_COLLISION_RADIUS);
+    assert(hResult == S_OK);
+
+    hResult = g_pd3dDevice->BeginScene();
+    assert(hResult == S_OK);
+
+    UINT numPass = 0;
+    hResult = g_pEffect->Begin(&numPass, 0);
+    assert(hResult == S_OK);
+
+    hResult = g_pEffect->BeginPass(0);
+    assert(hResult == S_OK);
+
+    hResult = g_pd3dDevice->SetFVF(D3DFVF_XYZRHW | D3DFVF_TEX1);
+    assert(hResult == S_OK);
+
+    hResult = g_pd3dDevice->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,
+                                            2,
+                                            vertices,
+                                            sizeof(ScreenVertex));
+    assert(hResult == S_OK);
+
+    hResult = g_pEffect->EndPass();
+    assert(hResult == S_OK);
+
+    hResult = g_pEffect->End();
+    assert(hResult == S_OK);
+
+    hResult = g_pd3dDevice->EndScene();
+    assert(hResult == S_OK);
+
+    hResult = g_pd3dDevice->SetTexture(0, NULL);
+    assert(hResult == S_OK);
+
+    hResult = g_pd3dDevice->SetTexture(1, NULL);
+    assert(hResult == S_OK);
+
+    hResult = g_pd3dDevice->SetViewport(&oldViewport);
+    assert(hResult == S_OK);
+
+    hResult = g_pd3dDevice->SetDepthStencilSurface(pOldDepthStencil);
+    assert(hResult == S_OK);
+
+    hResult = g_pd3dDevice->SetRenderTarget(0, pOldRenderTarget);
+    assert(hResult == S_OK);
+
+    SAFE_RELEASE(pNextSurface);
+    SAFE_RELEASE(pOldDepthStencil);
+    SAFE_RELEASE(pOldRenderTarget);
 }
 
 void SatisfyClothConstraint(int indexA, int indexB, float restLength)
@@ -800,6 +1161,26 @@ bool IsOpenMPSimulationEnabled()
     return g_simulationMode == SIMULATION_MODE_CPU_OPENMP;
 }
 
+bool IsGpuSimulationEnabled()
+{
+    return g_simulationMode == SIMULATION_MODE_GPU;
+}
+
+LPCTSTR GetSimulationModeText()
+{
+    if (g_simulationMode == SIMULATION_MODE_GPU)
+    {
+        return _T("GPU");
+    }
+
+    if (g_simulationMode == SIMULATION_MODE_CPU_OPENMP)
+    {
+        return _T("CPU_OPENMP");
+    }
+
+    return _T("CPU");
+}
+
 void UpdateSimulationModeFromCombo()
 {
     if (g_hSimulationCombo == NULL)
@@ -821,6 +1202,13 @@ void UpdateSimulationModeFromCombo()
     {
         g_simulationMode = SIMULATION_MODE_CPU;
     }
+
+    if (g_simulationMode != g_previousSimulationMode)
+    {
+        InitializeClothSimulation();
+    }
+
+    g_previousSimulationMode = g_simulationMode;
 }
 
 void BuildCameraViewMatrix(D3DXMATRIX* pView)
