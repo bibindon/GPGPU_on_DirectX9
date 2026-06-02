@@ -42,7 +42,6 @@ void VertexShader1(in  float4 inPosition  : POSITION,
                    in  float4 inTexCood   : TEXCOORD0,
 
                    out float4 outPosition : POSITION,
-                   out float4 outDiffuse  : COLOR0,
                    out float3 outWorldPos : TEXCOORD1,
                    out float3 outWorldNormal : TEXCOORD2,
                    out float4 outTexCood  : TEXCOORD0)
@@ -53,15 +52,10 @@ void VertexShader1(in  float4 inPosition  : POSITION,
     outWorldPos = worldPos.xyz;
     outWorldNormal = mul(inNormal.xyz, (float3x3)g_matWorld);
 
-    float lightIntensity = dot(outWorldNormal, g_lightNormal.xyz);
-    outDiffuse.rgb = max(0, lightIntensity);
-    outDiffuse.a = 1.0f;
-
     outTexCood = inTexCood;
 }
 
-void PixelShader1(in float4 inScreenColor : COLOR0,
-                  in float3 inWorldPos    : TEXCOORD1,
+void PixelShader1(in float3 inWorldPos    : TEXCOORD1,
                   in float3 inWorldNormal : TEXCOORD2,
                   in float2 inTexCood     : TEXCOORD0,
 
@@ -70,13 +64,14 @@ void PixelShader1(in float4 inScreenColor : COLOR0,
     float4 workColor = tex2D(textureSampler, inTexCood);
 
     float3 N = normalize(inWorldNormal);
-    float3 V = normalize(g_cameraPosition - inWorldPos);
     float3 L = normalize(g_lightNormal.xyz);
+    float3 V = normalize(g_cameraPosition - inWorldPos);
     float3 H = normalize(L + V);
 
+    float diffuse = max(0, dot(N, L));
     float specular = pow(max(0, dot(N, H)), g_specularPower) * g_specularIntensity;
 
-    float3 diffuseColor = inScreenColor.rgb * workColor.rgb;
+    float3 diffuseColor = diffuse * workColor.rgb;
     float3 specularColor = specular * float3(1.0f, 1.0f, 1.0f);
 
     outColor.rgb = diffuseColor + specularColor + 0.3f;
