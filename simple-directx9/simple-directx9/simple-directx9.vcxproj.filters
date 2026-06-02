@@ -25,6 +25,9 @@
     </FxCompile>
   </ItemGroup>
   <ItemGroup>
+    <None Include="cloth128x128.x">
+      <Filter>リソース ファイル</Filter>
+    </None>
     <None Include="cloth16x16.x">
       <Filter>リソース ファイル</Filter>
     </None>

@@ -22,9 +22,9 @@
 
 const int WINDOW_SIZE_W = 1600;
 const int WINDOW_SIZE_H = 900;
-const int CLOTH_VERTEX_COUNT_X = 16;
-const int CLOTH_VERTEX_COUNT_Z = 16;
-const int CLOTH_PARTICLE_COUNT = CLOTH_VERTEX_COUNT_X * CLOTH_VERTEX_COUNT_Z;
+int g_clothVertexCountX = 16;
+int g_clothVertexCountZ = 16;
+int g_clothParticleCount = 256;
 const float CLOTH_SIZE = 4.0f;
 const float CLOTH_START_Y = 1.1f;
 const float SPHERE_DISPLAY_RADIUS = 1.0f;
@@ -35,6 +35,7 @@ const float CAMERA_MIN_DISTANCE = 2.0f;
 const float CAMERA_MAX_DISTANCE = 20.0f;
 const int SETTINGS_COMBO_ID = 1001;
 const int SETTINGS_RESET_BUTTON_ID = 1002;
+const int SETTINGS_CLOTH_COMBO_ID = 1003;
 
 enum SimulationMode
 {
@@ -49,6 +50,7 @@ LPD3DXFONT g_pFont = NULL;
 LPD3DXEFFECT g_pEffect = NULL;
 HWND g_hSettingsWnd = NULL;
 HWND g_hSimulationCombo = NULL;
+HWND g_hClothCombo = NULL;
 LPDIRECT3DTEXTURE9 g_pGpuCurrentPositionTexture = NULL;
 LPDIRECT3DTEXTURE9 g_pGpuPreviousPositionTexture = NULL;
 LPDIRECT3DTEXTURE9 g_pGpuNextPositionTexture = NULL;
@@ -127,6 +129,7 @@ static void CreateSettingsWindow(HINSTANCE hInstance);
 static void UpdateFps();
 static void CreateGpuClothResources();
 static void CleanupGpuClothResources();
+static void LoadClothMeshForResolution(int vertexCountX, int vertexCountZ, LPCTSTR filename);
 static void UploadGpuClothTexture(LPDIRECT3DTEXTURE9 pTexture, bool bUsePreviousPosition);
 static void UploadGpuClothTextures();
 static void UploadGpuClothCurrentTexture();
@@ -315,9 +318,7 @@ void InitD3D(HWND hWnd)
     assert(hResult == S_OK);
 
     LoadMeshModel(_T("sphere.x"), &g_sphereModel);
-    LoadMeshModel(_T("cloth16x16.x"), &g_clothModel);
-    InitializeClothSimulation();
-    CreateGpuClothResources();
+    LoadClothMeshForResolution(16, 16, _T("cloth16x16.x"));
 
     hResult = D3DXCreateEffectFromFile(g_pd3dDevice,
                                        _T("simple.fx"),
@@ -416,6 +417,7 @@ void Cleanup()
         DestroyWindow(g_hSettingsWnd);
         g_hSettingsWnd = NULL;
         g_hSimulationCombo = NULL;
+        g_hClothCombo = NULL;
     }
 
     CleanupGpuClothResources();
@@ -546,14 +548,14 @@ void InitializeClothSimulation()
     }
 
     g_clothVertexStride = g_clothModel.pMesh->GetNumBytesPerVertex();
-    g_clothParticles.resize(CLOTH_VERTEX_COUNT_X * CLOTH_VERTEX_COUNT_Z);
+    g_clothParticles.resize(g_clothVertexCountX * g_clothVertexCountZ);
 
-    float spacing = CLOTH_SIZE / (float)(CLOTH_VERTEX_COUNT_X - 1);
+    float spacing = CLOTH_SIZE / (float)(g_clothVertexCountX - 1);
     float halfSize = CLOTH_SIZE * 0.5f;
 
-    for (int z = 0; z < CLOTH_VERTEX_COUNT_Z; z++)
+    for (int z = 0; z < g_clothVertexCountZ; z++)
     {
-        for (int x = 0; x < CLOTH_VERTEX_COUNT_X; x++)
+        for (int x = 0; x < g_clothVertexCountX; x++)
         {
             int index = GetClothIndex(x, z);
             float positionX = -halfSize + spacing * (float)x;
@@ -642,26 +644,26 @@ void UpdateClothSimulationCpuBody(bool bUseOpenMP)
 void ApplyClothConstraints()
 {
     const int constraintIterations = 8;
-    const float structuralRestLength = CLOTH_SIZE / (float)(CLOTH_VERTEX_COUNT_X - 1);
+    const float structuralRestLength = CLOTH_SIZE / (float)(g_clothVertexCountX - 1);
     const float shearRestLength = structuralRestLength * sqrtf(2.0f);
 
     for (int iteration = 0; iteration < constraintIterations; iteration++)
     {
-        for (int z = 0; z < CLOTH_VERTEX_COUNT_Z; z++)
+        for (int z = 0; z < g_clothVertexCountZ; z++)
         {
-            for (int x = 0; x < CLOTH_VERTEX_COUNT_X; x++)
+            for (int x = 0; x < g_clothVertexCountX; x++)
             {
-                if (x + 1 < CLOTH_VERTEX_COUNT_X)
+                if (x + 1 < g_clothVertexCountX)
                 {
                     SatisfyClothConstraint(GetClothIndex(x, z), GetClothIndex(x + 1, z), structuralRestLength);
                 }
 
-                if (z + 1 < CLOTH_VERTEX_COUNT_Z)
+                if (z + 1 < g_clothVertexCountZ)
                 {
                     SatisfyClothConstraint(GetClothIndex(x, z), GetClothIndex(x, z + 1), structuralRestLength);
                 }
 
-                if (x + 1 < CLOTH_VERTEX_COUNT_X && z + 1 < CLOTH_VERTEX_COUNT_Z)
+                if (x + 1 < g_clothVertexCountX && z + 1 < g_clothVertexCountZ)
                 {
                     SatisfyClothConstraint(GetClothIndex(x, z), GetClothIndex(x + 1, z + 1), shearRestLength);
                     SatisfyClothConstraint(GetClothIndex(x + 1, z), GetClothIndex(x, z + 1), shearRestLength);
@@ -715,8 +717,8 @@ void CreateGpuClothResources()
 {
     HRESULT hResult = E_FAIL;
 
-    hResult = g_pd3dDevice->CreateTexture(CLOTH_VERTEX_COUNT_X,
-                                          CLOTH_VERTEX_COUNT_Z,
+    hResult = g_pd3dDevice->CreateTexture(g_clothVertexCountX,
+                                          g_clothVertexCountZ,
                                           1,
                                           D3DUSAGE_RENDERTARGET,
                                           D3DFMT_A32B32G32R32F,
@@ -725,8 +727,8 @@ void CreateGpuClothResources()
                                           NULL);
     assert(hResult == S_OK);
 
-    hResult = g_pd3dDevice->CreateTexture(CLOTH_VERTEX_COUNT_X,
-                                          CLOTH_VERTEX_COUNT_Z,
+    hResult = g_pd3dDevice->CreateTexture(g_clothVertexCountX,
+                                          g_clothVertexCountZ,
                                           1,
                                           D3DUSAGE_RENDERTARGET,
                                           D3DFMT_A32B32G32R32F,
@@ -735,8 +737,8 @@ void CreateGpuClothResources()
                                           NULL);
     assert(hResult == S_OK);
 
-    hResult = g_pd3dDevice->CreateTexture(CLOTH_VERTEX_COUNT_X,
-                                          CLOTH_VERTEX_COUNT_Z,
+    hResult = g_pd3dDevice->CreateTexture(g_clothVertexCountX,
+                                          g_clothVertexCountZ,
                                           1,
                                           D3DUSAGE_RENDERTARGET,
                                           D3DFMT_A32B32G32R32F,
@@ -745,8 +747,8 @@ void CreateGpuClothResources()
                                           NULL);
     assert(hResult == S_OK);
 
-    hResult = g_pd3dDevice->CreateOffscreenPlainSurface(CLOTH_VERTEX_COUNT_X,
-                                                        CLOTH_VERTEX_COUNT_Z,
+    hResult = g_pd3dDevice->CreateOffscreenPlainSurface(g_clothVertexCountX,
+                                                        g_clothVertexCountZ,
                                                         D3DFMT_A32B32G32R32F,
                                                         D3DPOOL_SYSTEMMEM,
                                                         &g_pGpuReadbackSurface,
@@ -764,15 +766,31 @@ void CleanupGpuClothResources()
     SAFE_RELEASE(g_pGpuCurrentPositionTexture);
 }
 
+void LoadClothMeshForResolution(int vertexCountX, int vertexCountZ, LPCTSTR filename)
+{
+    g_clothVertexCountX = vertexCountX;
+    g_clothVertexCountZ = vertexCountZ;
+    g_clothParticleCount = vertexCountX * vertexCountZ;
+
+    CleanupMeshModel(&g_clothModel);
+    CleanupGpuClothResources();
+    g_clothParticles.clear();
+    g_bClothReady = false;
+
+    LoadMeshModel(filename, &g_clothModel);
+    InitializeClothSimulation();
+    CreateGpuClothResources();
+}
+
 void UploadGpuClothTexture(LPDIRECT3DTEXTURE9 pTexture, bool bUsePreviousPosition)
 {
     HRESULT hResult = E_FAIL;
     std::vector<GpuClothTexel> texels;
     LPDIRECT3DSURFACE9 pSurface = NULL;
 
-    texels.resize(CLOTH_PARTICLE_COUNT);
+    texels.resize(g_clothParticleCount);
 
-    for (int i = 0; i < CLOTH_PARTICLE_COUNT; i++)
+    for (int i = 0; i < g_clothParticleCount; i++)
     {
         D3DXVECTOR3 position = g_clothParticles[i].position;
 
@@ -795,7 +813,7 @@ void UploadGpuClothTexture(LPDIRECT3DTEXTURE9 pTexture, bool bUsePreviousPositio
                                         NULL,
                                         texels.data(),
                                         D3DFMT_A32B32G32R32F,
-                                        sizeof(GpuClothTexel) * CLOTH_VERTEX_COUNT_X,
+                                        sizeof(GpuClothTexel) * g_clothVertexCountX,
                                         NULL,
                                         NULL,
                                         D3DX_FILTER_NONE,
@@ -834,7 +852,7 @@ bool DownloadGpuClothPositions()
     D3DXVECTOR3 maxPosition(-FLT_MAX, -FLT_MAX, -FLT_MAX);
     bool bValid = true;
 
-    downloadedPositions.resize(CLOTH_PARTICLE_COUNT);
+    downloadedPositions.resize(g_clothParticleCount);
 
     hResult = g_pGpuCurrentPositionTexture->GetSurfaceLevel(0, &pSurface);
     if (FAILED(hResult))
@@ -856,12 +874,12 @@ bool DownloadGpuClothPositions()
         return false;
     }
 
-    for (int z = 0; z < CLOTH_VERTEX_COUNT_Z; z++)
+    for (int z = 0; z < g_clothVertexCountZ; z++)
     {
         BYTE* pRow = (BYTE*)lockedRect.pBits + lockedRect.Pitch * z;
         GpuClothTexel* pTexels = (GpuClothTexel*)pRow;
 
-        for (int x = 0; x < CLOTH_VERTEX_COUNT_X; x++)
+        for (int x = 0; x < g_clothVertexCountX; x++)
         {
             int index = GetClothIndex(x, z);
             D3DXVECTOR3 position(pTexels[x].x, pTexels[x].y, pTexels[x].z);
@@ -921,7 +939,7 @@ bool DownloadGpuClothPositions()
         return false;
     }
 
-    for (int i = 0; i < CLOTH_PARTICLE_COUNT; i++)
+    for (int i = 0; i < g_clothParticleCount; i++)
     {
         D3DXVECTOR3 oldPosition = g_clothParticles[i].position;
         g_clothParticles[i].previousPosition = oldPosition;
@@ -1001,8 +1019,8 @@ void RenderGpuClothPass()
 
     gpuViewport.X = 0;
     gpuViewport.Y = 0;
-    gpuViewport.Width = CLOTH_VERTEX_COUNT_X;
-    gpuViewport.Height = CLOTH_VERTEX_COUNT_Z;
+    gpuViewport.Width = g_clothVertexCountX;
+    gpuViewport.Height = g_clothVertexCountZ;
     gpuViewport.MinZ = 0.0f;
     gpuViewport.MaxZ = 1.0f;
     hResult = g_pd3dDevice->SetViewport(&gpuViewport);
@@ -1011,9 +1029,9 @@ void RenderGpuClothPass()
     ScreenVertex vertices[4] =
     {
         { -0.5f, -0.5f, 0.0f, 1.0f, 0.0f, 0.0f },
-        { (float)CLOTH_VERTEX_COUNT_X - 0.5f, -0.5f, 0.0f, 1.0f, 1.0f, 0.0f },
-        { -0.5f, (float)CLOTH_VERTEX_COUNT_Z - 0.5f, 0.0f, 1.0f, 0.0f, 1.0f },
-        { (float)CLOTH_VERTEX_COUNT_X - 0.5f, (float)CLOTH_VERTEX_COUNT_Z - 0.5f, 0.0f, 1.0f, 1.0f, 1.0f },
+        { (float)g_clothVertexCountX - 0.5f, -0.5f, 0.0f, 1.0f, 1.0f, 0.0f },
+        { -0.5f, (float)g_clothVertexCountZ - 0.5f, 0.0f, 1.0f, 0.0f, 1.0f },
+        { (float)g_clothVertexCountX - 0.5f, (float)g_clothVertexCountZ - 0.5f, 0.0f, 1.0f, 1.0f, 1.0f },
     };
 
     hResult = g_pEffect->SetTechnique("GpuClothUpdateTechnique");
@@ -1152,9 +1170,9 @@ void UpdateClothNormals()
         }
     }
 
-    for (int z = 0; z < CLOTH_VERTEX_COUNT_Z - 1; z++)
+    for (int z = 0; z < g_clothVertexCountZ - 1; z++)
     {
-        for (int x = 0; x < CLOTH_VERTEX_COUNT_X - 1; x++)
+        for (int x = 0; x < g_clothVertexCountX - 1; x++)
         {
             int indexA = GetClothIndex(x, z);
             int indexB = GetClothIndex(x + 1, z);
@@ -1259,7 +1277,7 @@ void WriteClothMeshVertices()
 
 int GetClothIndex(int x, int z)
 {
-    return z * CLOTH_VERTEX_COUNT_X + x;
+    return z * g_clothVertexCountX + x;
 }
 
 bool IsOpenMPSimulationEnabled()
@@ -1381,7 +1399,7 @@ void CreateSettingsWindow(HINSTANCE hInstance)
                                   CW_USEDEFAULT,
                                   CW_USEDEFAULT,
                                   260,
-                                  150,
+                                  180,
                                   NULL,
                                   NULL,
                                   hInstance,
@@ -1421,11 +1439,41 @@ void CreateSettingsWindow(HINSTANCE hInstance)
     SendMessage(g_hSimulationCombo, CB_SETCURSEL, SIMULATION_MODE_CPU_OPENMP, 0);
     UpdateSimulationModeFromCombo();
 
+    HWND hClothLabel = CreateWindow(_T("STATIC"),
+                                    _T("Cloth"),
+                                    WS_CHILD | WS_VISIBLE,
+                                    16,
+                                    54,
+                                    100,
+                                    22,
+                                    g_hSettingsWnd,
+                                    NULL,
+                                    hInstance,
+                                    NULL);
+    assert(hClothLabel != NULL);
+
+    g_hClothCombo = CreateWindow(_T("COMBOBOX"),
+                                 NULL,
+                                 WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
+                                 112,
+                                 50,
+                                 120,
+                                 120,
+                                 g_hSettingsWnd,
+                                 (HMENU)(INT_PTR)SETTINGS_CLOTH_COMBO_ID,
+                                 hInstance,
+                                 NULL);
+    assert(g_hClothCombo != NULL);
+
+    SendMessage(g_hClothCombo, CB_ADDSTRING, 0, (LPARAM)_T("16x16"));
+    SendMessage(g_hClothCombo, CB_ADDSTRING, 0, (LPARAM)_T("128x128"));
+    SendMessage(g_hClothCombo, CB_SETCURSEL, 0, 0);
+
     HWND hResetButton = CreateWindow(_T("BUTTON"),
                                      _T("リセット"),
                                      WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                                      112,
-                                     52,
+                                     86,
                                      120,
                                      28,
                                      g_hSettingsWnd,
@@ -1527,6 +1575,22 @@ LRESULT WINAPI SettingsMsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam
             return 0;
         }
 
+        if (controlId == SETTINGS_CLOTH_COMBO_ID && notification == CBN_SELCHANGE)
+        {
+            LRESULT selectedIndex = SendMessage(g_hClothCombo, CB_GETCURSEL, 0, 0);
+
+            if (selectedIndex == 0)
+            {
+                LoadClothMeshForResolution(16, 16, _T("cloth16x16.x"));
+            }
+            else
+            {
+                LoadClothMeshForResolution(128, 128, _T("cloth128x128.x"));
+            }
+
+            return 0;
+        }
+
         if (controlId == SETTINGS_RESET_BUTTON_ID && notification == BN_CLICKED)
         {
             InitializeClothSimulation();
@@ -1546,6 +1610,7 @@ LRESULT WINAPI SettingsMsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam
         {
             g_hSettingsWnd = NULL;
             g_hSimulationCombo = NULL;
+            g_hClothCombo = NULL;
         }
 
         return 0;
