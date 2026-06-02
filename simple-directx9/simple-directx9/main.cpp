@@ -338,7 +338,7 @@ void Render()
     D3DXMatrixLookAtLH(&View, &vec1, &vec2, &vec3);
     matViewProj = View * Proj;
     D3DXMatrixIdentity(&matSphereWorld);
-    D3DXMatrixTranslation(&matClothWorld, 0.0f, 1.6f, 0.0f);
+    D3DXMatrixTranslation(&matClothWorld, 0.0f, 0.6f, 0.0f);
 
     hResult = g_pd3dDevice->Clear(0,
                                   NULL,
