@@ -23,14 +23,24 @@ const int WINDOW_SIZE_H = 900;
 LPDIRECT3D9 g_pD3D = NULL;
 LPDIRECT3DDEVICE9 g_pd3dDevice = NULL;
 LPD3DXFONT g_pFont = NULL;
-LPD3DXMESH g_pMesh = NULL;
-std::vector<D3DMATERIAL9> g_pMaterials;
-std::vector<LPDIRECT3DTEXTURE9> g_pTextures;
-DWORD g_dwNumMaterials = 0;
 LPD3DXEFFECT g_pEffect = NULL;
 bool g_bClose = false;
 
+struct MeshModel
+{
+    LPD3DXMESH pMesh;
+    std::vector<D3DMATERIAL9> materials;
+    std::vector<LPDIRECT3DTEXTURE9> textures;
+    DWORD dwNumMaterials;
+};
+
+MeshModel g_sphereModel { };
+MeshModel g_clothModel { };
+
 static void TextDraw(LPD3DXFONT pFont, TCHAR* text, int X, int Y);
+static void LoadMeshModel(LPCTSTR pFileName, MeshModel* pModel);
+static void CleanupMeshModel(MeshModel* pModel);
+static void DrawMeshModel(MeshModel* pModel, const D3DXMATRIX& world, const D3DXMATRIX& viewProj);
 static void InitD3D(HWND hWnd);
 static void Cleanup();
 static void Render();
@@ -201,28 +211,49 @@ void InitD3D(HWND hWnd)
 
     assert(hResult == S_OK);
 
+    hResult = g_pd3dDevice->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    assert(hResult == S_OK);
+
+    LoadMeshModel(_T("sphere.x"), &g_sphereModel);
+    LoadMeshModel(_T("cloth16x16.x"), &g_clothModel);
+
+    hResult = D3DXCreateEffectFromFile(g_pd3dDevice,
+                                       _T("simple.fx"),
+                                       NULL,
+                                       NULL,
+                                       D3DXSHADER_DEBUG | D3DXSHADER_SKIPOPTIMIZATION,
+                                       NULL,
+                                       &g_pEffect,
+                                       NULL);
+
+    assert(hResult == S_OK);
+}
+
+void LoadMeshModel(LPCTSTR pFileName, MeshModel* pModel)
+{
+    HRESULT hResult = E_FAIL;
     LPD3DXBUFFER pD3DXMtrlBuffer = NULL;
 
-    hResult = D3DXLoadMeshFromX(_T("sphere.x"),
+    hResult = D3DXLoadMeshFromX(pFileName,
                                 D3DXMESH_SYSTEMMEM,
                                 g_pd3dDevice,
                                 NULL,
                                 &pD3DXMtrlBuffer,
                                 NULL,
-                                &g_dwNumMaterials,
-                                &g_pMesh);
+                                &pModel->dwNumMaterials,
+                                &pModel->pMesh);
 
     assert(hResult == S_OK);
 
     D3DXMATERIAL* d3dxMaterials = (D3DXMATERIAL*)pD3DXMtrlBuffer->GetBufferPointer();
-    g_pMaterials.resize(g_dwNumMaterials);
-    g_pTextures.resize(g_dwNumMaterials);
+    pModel->materials.resize(pModel->dwNumMaterials);
+    pModel->textures.resize(pModel->dwNumMaterials);
 
-    for (DWORD i = 0; i < g_dwNumMaterials; i++)
+    for (DWORD i = 0; i < pModel->dwNumMaterials; i++)
     {
-        g_pMaterials[i] = d3dxMaterials[i].MatD3D;
-        g_pMaterials[i].Ambient = g_pMaterials[i].Diffuse;
-        g_pTextures[i] = NULL;
+        pModel->materials[i] = d3dxMaterials[i].MatD3D;
+        pModel->materials[i].Ambient = pModel->materials[i].Diffuse;
+        pModel->textures[i] = NULL;
         
         //--------------------------------------------------------------
         // Unicode文字セットでもマルチバイト文字セットでも
@@ -244,7 +275,7 @@ void InitD3D(HWND hWnd)
 
             if (!bUnicode)
             {
-                hResult = D3DXCreateTextureFromFileA(g_pd3dDevice, pTexPath.c_str(), &g_pTextures[i]);
+                hResult = D3DXCreateTextureFromFileA(g_pd3dDevice, pTexPath.c_str(), &pModel->textures[i]);
                 assert(hResult == S_OK);
             }
             else
@@ -253,7 +284,7 @@ void InitD3D(HWND hWnd)
                 std::wstring pTexPathW(len, 0);
                 MultiByteToWideChar(CP_ACP, 0, pTexPath.c_str(), -1, &pTexPathW[0], len);
 
-                hResult = D3DXCreateTextureFromFileW(g_pd3dDevice, pTexPathW.c_str(), &g_pTextures[i]);
+                hResult = D3DXCreateTextureFromFileW(g_pd3dDevice, pTexPathW.c_str(), &pModel->textures[i]);
                 assert(hResult == S_OK);
             }
         }
@@ -261,27 +292,25 @@ void InitD3D(HWND hWnd)
 
     hResult = pD3DXMtrlBuffer->Release();
     assert(hResult == S_OK);
-
-    hResult = D3DXCreateEffectFromFile(g_pd3dDevice,
-                                       _T("simple.fx"),
-                                       NULL,
-                                       NULL,
-                                       D3DXSHADER_DEBUG | D3DXSHADER_SKIPOPTIMIZATION,
-                                       NULL,
-                                       &g_pEffect,
-                                       NULL);
-
-    assert(hResult == S_OK);
 }
 
-void Cleanup()
+void CleanupMeshModel(MeshModel* pModel)
 {
-    for (auto& texture : g_pTextures)
+    for (auto& texture : pModel->textures)
     {
         SAFE_RELEASE(texture);
     }
 
-    SAFE_RELEASE(g_pMesh);
+    SAFE_RELEASE(pModel->pMesh);
+    pModel->materials.clear();
+    pModel->textures.clear();
+    pModel->dwNumMaterials = 0;
+}
+
+void Cleanup()
+{
+    CleanupMeshModel(&g_clothModel);
+    CleanupMeshModel(&g_sphereModel);
     SAFE_RELEASE(g_pEffect);
     SAFE_RELEASE(g_pFont);
     SAFE_RELEASE(g_pd3dDevice);
@@ -292,8 +321,10 @@ void Render()
 {
     HRESULT hResult = E_FAIL;
 
-    D3DXMATRIX mat;
+    D3DXMATRIX matViewProj;
     D3DXMATRIX View, Proj;
+    D3DXMATRIX matSphereWorld;
+    D3DXMATRIX matClothWorld;
 
     D3DXMatrixPerspectiveFovLH(&Proj,
                                D3DXToRadian(45),
@@ -305,11 +336,9 @@ void Render()
     D3DXVECTOR3 vec2(0, 0, 0);
     D3DXVECTOR3 vec3(0, 1, 0);
     D3DXMatrixLookAtLH(&View, &vec1, &vec2, &vec3);
-    D3DXMatrixIdentity(&mat);
-    mat = mat * View * Proj;
-
-    hResult = g_pEffect->SetMatrix("g_matWorldViewProj", &mat);
-    assert(hResult == S_OK);
+    matViewProj = View * Proj;
+    D3DXMatrixIdentity(&matSphereWorld);
+    D3DXMatrixTranslation(&matClothWorld, 0.0f, 1.6f, 0.0f);
 
     hResult = g_pd3dDevice->Clear(0,
                                   NULL,
@@ -337,17 +366,8 @@ void Render()
     hResult = g_pEffect->BeginPass(0);
     assert(hResult == S_OK);
 
-    for (DWORD i = 0; i < g_dwNumMaterials; i++)
-    {
-        hResult = g_pEffect->SetTexture("texture1", g_pTextures[i]);
-        assert(hResult == S_OK);
-
-        hResult = g_pEffect->CommitChanges();
-        assert(hResult == S_OK);
-
-        hResult = g_pMesh->DrawSubset(i);
-        assert(hResult == S_OK);
-    }
+    DrawMeshModel(&g_sphereModel, matSphereWorld, matViewProj);
+    DrawMeshModel(&g_clothModel, matClothWorld, matViewProj);
 
     hResult = g_pEffect->EndPass();
     assert(hResult == S_OK);
@@ -360,6 +380,27 @@ void Render()
 
     hResult = g_pd3dDevice->Present(NULL, NULL, NULL, NULL);
     assert(hResult == S_OK);
+}
+
+void DrawMeshModel(MeshModel* pModel, const D3DXMATRIX& world, const D3DXMATRIX& viewProj)
+{
+    HRESULT hResult = E_FAIL;
+    D3DXMATRIX matWorldViewProj = world * viewProj;
+
+    hResult = g_pEffect->SetMatrix("g_matWorldViewProj", &matWorldViewProj);
+    assert(hResult == S_OK);
+
+    for (DWORD i = 0; i < pModel->dwNumMaterials; i++)
+    {
+        hResult = g_pEffect->SetTexture("texture1", pModel->textures[i]);
+        assert(hResult == S_OK);
+
+        hResult = g_pEffect->CommitChanges();
+        assert(hResult == S_OK);
+
+        hResult = pModel->pMesh->DrawSubset(i);
+        assert(hResult == S_OK);
+    }
 }
 
 LRESULT WINAPI MsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)

@@ -25,6 +25,12 @@
     </FxCompile>
   </ItemGroup>
   <ItemGroup>
+    <None Include="cloth16x16.x">
+      <Filter>リソース ファイル</Filter>
+    </None>
+    <None Include="cloth.x">
+      <Filter>リソース ファイル</Filter>
+    </None>
     <None Include="packages.config" />
     <None Include="sphere.x">
       <Filter>リソース ファイル</Filter>

@@ -163,6 +163,8 @@
     </FxCompile>
   </ItemGroup>
   <ItemGroup>
+    <None Include="cloth16x16.x" />
+    <None Include="cloth.x" />
     <None Include="packages.config" />
     <None Include="sphere.x" />
   </ItemGroup>
