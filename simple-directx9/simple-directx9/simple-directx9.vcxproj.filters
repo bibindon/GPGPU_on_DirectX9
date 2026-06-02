@@ -26,5 +26,8 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
+    <None Include="sphere.x">
+      <Filter>リソース ファイル</Filter>
+    </None>
   </ItemGroup>
 </Project>
