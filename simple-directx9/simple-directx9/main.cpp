@@ -16,6 +16,7 @@
 #include <crtdbg.h>
 #include <vector>
 #include <cmath>
+#include <float.h>
 
 #define SAFE_RELEASE(p) { if (p) { (p)->Release(); (p) = NULL; } }
 
@@ -127,6 +128,7 @@ static void UploadGpuClothTextures();
 static void UploadGpuClothCurrentTexture();
 static bool DownloadGpuClothPositions();
 static void RenderGpuClothPass();
+static bool IsValidGpuClothPosition(const D3DXVECTOR3& position);
 static bool IsOpenMPSimulationEnabled();
 static bool IsGpuSimulationEnabled();
 static LPCTSTR GetSimulationModeText();
@@ -255,7 +257,7 @@ void InitD3D(HWND hWnd)
     d3dpp.FullScreen_RefreshRateInHz = D3DPRESENT_RATE_DEFAULT;
     d3dpp.PresentationInterval = D3DPRESENT_INTERVAL_DEFAULT;
 
-    if (false)
+    if (true)
     {
         hResult = g_pD3D->CreateDevice(D3DADAPTER_DEFAULT,
                                        D3DDEVTYPE_HAL,
@@ -817,6 +819,12 @@ bool DownloadGpuClothPositions()
     HRESULT hResult = E_FAIL;
     LPDIRECT3DSURFACE9 pSurface = NULL;
     D3DLOCKED_RECT lockedRect { };
+    std::vector<D3DXVECTOR3> downloadedPositions;
+    D3DXVECTOR3 minPosition(FLT_MAX, FLT_MAX, FLT_MAX);
+    D3DXVECTOR3 maxPosition(-FLT_MAX, -FLT_MAX, -FLT_MAX);
+    bool bValid = true;
+
+    downloadedPositions.resize(CLOTH_PARTICLE_COUNT);
 
     hResult = g_pGpuCurrentPositionTexture->GetSurfaceLevel(0, &pSurface);
     if (FAILED(hResult))
@@ -846,10 +854,44 @@ bool DownloadGpuClothPositions()
         for (int x = 0; x < CLOTH_VERTEX_COUNT_X; x++)
         {
             int index = GetClothIndex(x, z);
-            D3DXVECTOR3 oldPosition = g_clothParticles[index].position;
+            D3DXVECTOR3 position(pTexels[x].x, pTexels[x].y, pTexels[x].z);
 
-            g_clothParticles[index].previousPosition = oldPosition;
-            g_clothParticles[index].position = D3DXVECTOR3(pTexels[x].x, pTexels[x].y, pTexels[x].z);
+            if (!IsValidGpuClothPosition(position))
+            {
+                bValid = false;
+            }
+
+            if (position.x < minPosition.x)
+            {
+                minPosition.x = position.x;
+            }
+
+            if (position.y < minPosition.y)
+            {
+                minPosition.y = position.y;
+            }
+
+            if (position.z < minPosition.z)
+            {
+                minPosition.z = position.z;
+            }
+
+            if (position.x > maxPosition.x)
+            {
+                maxPosition.x = position.x;
+            }
+
+            if (position.y > maxPosition.y)
+            {
+                maxPosition.y = position.y;
+            }
+
+            if (position.z > maxPosition.z)
+            {
+                maxPosition.z = position.z;
+            }
+
+            downloadedPositions[index] = position;
         }
     }
 
@@ -857,6 +899,60 @@ bool DownloadGpuClothPositions()
     assert(hResult == S_OK);
 
     SAFE_RELEASE(pSurface);
+
+    if (fabsf(maxPosition.x - minPosition.x) < 0.0001f &&
+        fabsf(maxPosition.z - minPosition.z) < 0.0001f)
+    {
+        bValid = false;
+    }
+
+    if (!bValid)
+    {
+        return false;
+    }
+
+    for (int i = 0; i < CLOTH_PARTICLE_COUNT; i++)
+    {
+        D3DXVECTOR3 oldPosition = g_clothParticles[i].position;
+        g_clothParticles[i].previousPosition = oldPosition;
+        g_clothParticles[i].position = downloadedPositions[i];
+    }
+
+    return true;
+}
+
+bool IsValidGpuClothPosition(const D3DXVECTOR3& position)
+{
+    if (!_finite(position.x))
+    {
+        return false;
+    }
+
+    if (!_finite(position.y))
+    {
+        return false;
+    }
+
+    if (!_finite(position.z))
+    {
+        return false;
+    }
+
+    if (fabsf(position.x) > 100.0f)
+    {
+        return false;
+    }
+
+    if (fabsf(position.y) > 100.0f)
+    {
+        return false;
+    }
+
+    if (fabsf(position.z) > 100.0f)
+    {
+        return false;
+    }
+
     return true;
 }
 
