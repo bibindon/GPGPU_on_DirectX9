@@ -37,8 +37,11 @@ const int SETTINGS_COMBO_ID = 1001;
 const int SETTINGS_RESET_BUTTON_ID = 1002;
 const int SETTINGS_CLOTH_COMBO_ID = 1003;
 const int SETTINGS_STIFFNESS_COMBO_ID = 1004;
+const int SETTINGS_BEND_COMBO_ID = 1005;
 const int g_clothConstraintIterationValues[] = { 2, 4, 8, 16, 32 };
 int g_clothConstraintIterations = 8;
+const float g_clothBendStiffnessValues[] = { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f };
+float g_clothBendStiffness = 0.5f;
 
 enum SimulationMode
 {
@@ -55,6 +58,7 @@ HWND g_hSettingsWnd = NULL;
 HWND g_hSimulationCombo = NULL;
 HWND g_hClothCombo = NULL;
 HWND g_hStiffnessCombo = NULL;
+HWND g_hBendCombo = NULL;
 LPDIRECT3DTEXTURE9 g_pGpuCurrentPositionTexture = NULL;
 LPDIRECT3DTEXTURE9 g_pGpuPreviousPositionTexture = NULL;
 LPDIRECT3DTEXTURE9 g_pGpuNextPositionTexture = NULL;
@@ -125,7 +129,7 @@ static void UpdateClothSimulation();
 static void UpdateClothSimulationGpu();
 static void UpdateClothSimulationCpuBody(bool bUseOpenMP);
 static void ApplyClothConstraints();
-static void SatisfyClothConstraint(int indexA, int indexB, float restLength);
+static void SatisfyClothConstraint(int indexA, int indexB, float restLength, float stiffness = 1.0f);
 static void ApplySphereCollision(D3DXVECTOR3* pPosition);
 static void UpdateClothNormals();
 static void WriteClothMeshVertices();
@@ -425,6 +429,7 @@ void Cleanup()
         g_hSimulationCombo = NULL;
         g_hClothCombo = NULL;
         g_hStiffnessCombo = NULL;
+        g_hBendCombo = NULL;
     }
 
     CleanupGpuClothResources();
@@ -664,6 +669,7 @@ void ApplyClothConstraints()
 {
     const float structuralRestLength = CLOTH_SIZE / (float)(g_clothVertexCountX - 1);
     const float shearRestLength = structuralRestLength * sqrtf(2.0f);
+    const float bendRestLength = structuralRestLength * 2.0f;
 
     for (int iteration = 0; iteration < g_clothConstraintIterations; iteration++)
     {
@@ -685,6 +691,16 @@ void ApplyClothConstraints()
                 {
                     SatisfyClothConstraint(GetClothIndex(x, z), GetClothIndex(x + 1, z + 1), shearRestLength);
                     SatisfyClothConstraint(GetClothIndex(x + 1, z), GetClothIndex(x, z + 1), shearRestLength);
+                }
+
+                if (x + 2 < g_clothVertexCountX)
+                {
+                    SatisfyClothConstraint(GetClothIndex(x, z), GetClothIndex(x + 2, z), bendRestLength, g_clothBendStiffness);
+                }
+
+                if (z + 2 < g_clothVertexCountZ)
+                {
+                    SatisfyClothConstraint(GetClothIndex(x, z), GetClothIndex(x, z + 2), bendRestLength, g_clothBendStiffness);
                 }
             }
         }
@@ -1144,7 +1160,7 @@ void RenderGpuClothPass()
     SAFE_RELEASE(pOldRenderTarget);
 }
 
-void SatisfyClothConstraint(int indexA, int indexB, float restLength)
+void SatisfyClothConstraint(int indexA, int indexB, float restLength, float stiffness)
 {
     ClothParticle& particleA = g_clothParticles[indexA];
     ClothParticle& particleB = g_clothParticles[indexB];
@@ -1156,7 +1172,7 @@ void SatisfyClothConstraint(int indexA, int indexB, float restLength)
         return;
     }
 
-    D3DXVECTOR3 correction = delta * ((length - restLength) / length);
+    D3DXVECTOR3 correction = delta * ((length - restLength) / length) * stiffness;
 
     if (!particleA.bFixed && !particleB.bFixed)
     {
@@ -1445,7 +1461,7 @@ void CreateSettingsWindow(HINSTANCE hInstance)
                                   CW_USEDEFAULT,
                                   CW_USEDEFAULT,
                                   260,
-                                  220,
+                                  260,
                                   NULL,
                                   NULL,
                                   hInstance,
@@ -1548,11 +1564,44 @@ void CreateSettingsWindow(HINSTANCE hInstance)
     SendMessage(g_hStiffnessCombo, CB_ADDSTRING, 0, (LPARAM)_T("32"));
     SendMessage(g_hStiffnessCombo, CB_SETCURSEL, 2, 0);
 
+    HWND hBendLabel = CreateWindow(_T("STATIC"),
+                                   _T("Bend"),
+                                   WS_CHILD | WS_VISIBLE,
+                                   16,
+                                   126,
+                                   100,
+                                   22,
+                                   g_hSettingsWnd,
+                                   NULL,
+                                   hInstance,
+                                   NULL);
+    assert(hBendLabel != NULL);
+
+    g_hBendCombo = CreateWindow(_T("COMBOBOX"),
+                                NULL,
+                                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
+                                112,
+                                122,
+                                120,
+                                120,
+                                g_hSettingsWnd,
+                                (HMENU)(INT_PTR)SETTINGS_BEND_COMBO_ID,
+                                hInstance,
+                                NULL);
+    assert(g_hBendCombo != NULL);
+
+    SendMessage(g_hBendCombo, CB_ADDSTRING, 0, (LPARAM)_T("0.00"));
+    SendMessage(g_hBendCombo, CB_ADDSTRING, 0, (LPARAM)_T("0.25"));
+    SendMessage(g_hBendCombo, CB_ADDSTRING, 0, (LPARAM)_T("0.50"));
+    SendMessage(g_hBendCombo, CB_ADDSTRING, 0, (LPARAM)_T("0.75"));
+    SendMessage(g_hBendCombo, CB_ADDSTRING, 0, (LPARAM)_T("1.00"));
+    SendMessage(g_hBendCombo, CB_SETCURSEL, 2, 0);
+
     HWND hResetButton = CreateWindow(_T("BUTTON"),
                                      _T("リセット"),
                                      WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                                      112,
-                                     122,
+                                     158,
                                      120,
                                      28,
                                      g_hSettingsWnd,
@@ -1682,6 +1731,18 @@ LRESULT WINAPI SettingsMsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam
             return 0;
         }
 
+        if (controlId == SETTINGS_BEND_COMBO_ID && notification == CBN_SELCHANGE)
+        {
+            LRESULT selectedIndex = SendMessage(g_hBendCombo, CB_GETCURSEL, 0, 0);
+
+            if (selectedIndex >= 0 && selectedIndex < 5)
+            {
+                g_clothBendStiffness = g_clothBendStiffnessValues[selectedIndex];
+            }
+
+            return 0;
+        }
+
         if (controlId == SETTINGS_RESET_BUTTON_ID && notification == BN_CLICKED)
         {
             InitializeClothSimulation();
@@ -1703,6 +1764,7 @@ LRESULT WINAPI SettingsMsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam
             g_hSimulationCombo = NULL;
             g_hClothCombo = NULL;
             g_hStiffnessCombo = NULL;
+            g_hBendCombo = NULL;
         }
 
         return 0;
