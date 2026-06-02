@@ -61,6 +61,9 @@ float g_cameraPitch = 0.35f;
 float g_cameraDistance = 8.5f;
 SimulationMode g_simulationMode = SIMULATION_MODE_CPU_OPENMP;
 SimulationMode g_previousSimulationMode = SIMULATION_MODE_CPU_OPENMP;
+LARGE_INTEGER g_performanceFrequency { };
+LARGE_INTEGER g_previousPerformanceCounter { };
+float g_currentFps = 0.0f;
 
 struct MeshModel
 {
@@ -121,6 +124,7 @@ static void WriteClothMeshVertices();
 static int GetClothIndex(int x, int z);
 static void BuildCameraViewMatrix(D3DXMATRIX* pView);
 static void CreateSettingsWindow(HINSTANCE hInstance);
+static void UpdateFps();
 static void CreateGpuClothResources();
 static void CleanupGpuClothResources();
 static void UploadGpuClothTexture(LPDIRECT3DTEXTURE9 pTexture, bool bUsePreviousPosition);
@@ -150,6 +154,8 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance,
                      _In_ int nCmdShow)
 {
     _CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
+    QueryPerformanceFrequency(&g_performanceFrequency);
+    QueryPerformanceCounter(&g_previousPerformanceCounter);
 
     WNDCLASSEX wc { };
     wc.cbSize = sizeof(WNDCLASSEX);
@@ -203,7 +209,7 @@ int WINAPI _tWinMain(_In_ HINSTANCE hInstance,
         }
         else
         {
-            Sleep(16);
+            //Sleep(16);
             Render();
         }
 
@@ -432,6 +438,8 @@ void Render()
     D3DXMATRIX matSphereWorld;
     D3DXMATRIX matClothWorld;
 
+    UpdateFps();
+
     D3DXMatrixPerspectiveFovLH(&Proj,
                                D3DXToRadian(45),
                                (float)WINDOW_SIZE_W / WINDOW_SIZE_H,
@@ -463,6 +471,8 @@ void Render()
     _tcscpy_s(msg, 100, _T("Simulation: "));
     _tcscat_s(msg, 100, GetSimulationModeText());
     TextDraw(g_pFont, msg, 0, 24);
+    _stprintf_s(msg, 100, _T("FPS: %.1f"), g_currentFps);
+    TextDraw(g_pFont, msg, 0, 48);
 
     hResult = g_pEffect->SetTechnique("Technique1");
     assert(hResult == S_OK);
@@ -1319,6 +1329,32 @@ void BuildCameraViewMatrix(D3DXMATRIX* pView)
     eye.z = -g_cameraDistance * cosf(g_cameraYaw) * cosPitch;
 
     D3DXMatrixLookAtLH(pView, &eye, &target, &up);
+}
+
+void UpdateFps()
+{
+    LARGE_INTEGER currentCounter { };
+    QueryPerformanceCounter(&currentCounter);
+
+    double elapsedSeconds = (double)(currentCounter.QuadPart - g_previousPerformanceCounter.QuadPart) /
+                            (double)g_performanceFrequency.QuadPart;
+    g_previousPerformanceCounter = currentCounter;
+
+    if (elapsedSeconds <= 0.0)
+    {
+        return;
+    }
+
+    float instantFps = (float)(1.0 / elapsedSeconds);
+
+    if (g_currentFps <= 0.0f)
+    {
+        g_currentFps = instantFps;
+    }
+    else
+    {
+        g_currentFps = g_currentFps * 0.9f + instantFps * 0.1f;
+    }
 }
 
 void CreateSettingsWindow(HINSTANCE hInstance)
