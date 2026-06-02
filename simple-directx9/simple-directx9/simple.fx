@@ -1,5 +1,9 @@
 float4x4 g_matWorldViewProj;
+float4x4 g_matWorld;
 float4 g_lightNormal = { 0.3f, 1.0f, 0.5f, 0.0f };
+float3 g_cameraPosition;
+float g_specularPower = 32.0f;
+float g_specularIntensity = 0.4f;
 
 texture texture1;
 sampler textureSampler = sampler_state {
@@ -39,11 +43,17 @@ void VertexShader1(in  float4 inPosition  : POSITION,
 
                    out float4 outPosition : POSITION,
                    out float4 outDiffuse  : COLOR0,
+                   out float3 outWorldPos : TEXCOORD1,
+                   out float3 outWorldNormal : TEXCOORD2,
                    out float4 outTexCood  : TEXCOORD0)
 {
     outPosition = mul(inPosition, g_matWorldViewProj);
 
-    float lightIntensity = dot(inNormal, g_lightNormal);
+    float4 worldPos = mul(inPosition, g_matWorld);
+    outWorldPos = worldPos.xyz;
+    outWorldNormal = mul(inNormal.xyz, (float3x3)g_matWorld);
+
+    float lightIntensity = dot(outWorldNormal, g_lightNormal.xyz);
     outDiffuse.rgb = max(0, lightIntensity);
     outDiffuse.a = 1.0f;
 
@@ -51,13 +61,26 @@ void VertexShader1(in  float4 inPosition  : POSITION,
 }
 
 void PixelShader1(in float4 inScreenColor : COLOR0,
+                  in float3 inWorldPos    : TEXCOORD1,
+                  in float3 inWorldNormal : TEXCOORD2,
                   in float2 inTexCood     : TEXCOORD0,
 
                   out float4 outColor     : COLOR)
 {
-    float4 workColor = (float4)0;
-    workColor = tex2D(textureSampler, inTexCood);
-    outColor = inScreenColor * workColor + 0.3f;
+    float4 workColor = tex2D(textureSampler, inTexCood);
+
+    float3 N = normalize(inWorldNormal);
+    float3 V = normalize(g_cameraPosition - inWorldPos);
+    float3 L = normalize(g_lightNormal.xyz);
+    float3 H = normalize(L + V);
+
+    float specular = pow(max(0, dot(N, H)), g_specularPower) * g_specularIntensity;
+
+    float3 diffuseColor = inScreenColor.rgb * workColor.rgb;
+    float3 specularColor = specular * float3(1.0f, 1.0f, 1.0f);
+
+    outColor.rgb = diffuseColor + specularColor + 0.3f;
+    outColor.a = 1.0f;
 }
 
 void GpuClothUpdatePixelShader(in float2 inTexCood : TEXCOORD0,

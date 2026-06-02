@@ -66,6 +66,7 @@ POINT g_lastMousePosition { };
 float g_cameraYaw = 0.0f;
 float g_cameraPitch = 0.35f;
 float g_cameraDistance = 8.5f;
+D3DXVECTOR3 g_cameraEye { };
 SimulationMode g_simulationMode = SIMULATION_MODE_CPU_OPENMP;
 SimulationMode g_previousSimulationMode = SIMULATION_MODE_CPU_OPENMP;
 LARGE_INTEGER g_performanceFrequency { };
@@ -485,6 +486,15 @@ void Render()
     hResult = g_pEffect->SetTechnique("Technique1");
     assert(hResult == S_OK);
 
+    hResult = g_pEffect->SetFloatArray("g_cameraPosition", (const float*)&g_cameraEye, 3);
+    assert(hResult == S_OK);
+
+    hResult = g_pEffect->SetFloat("g_specularPower", 32.0f);
+    assert(hResult == S_OK);
+
+    hResult = g_pEffect->SetFloat("g_specularIntensity", 0.4f);
+    assert(hResult == S_OK);
+
     UINT numPass;
     hResult = g_pEffect->Begin(&numPass, 0);
     assert(hResult == S_OK);
@@ -514,6 +524,9 @@ void DrawMeshModel(MeshModel* pModel, const D3DXMATRIX& world, const D3DXMATRIX&
     D3DXMATRIX matWorldViewProj = world * viewProj;
 
     hResult = g_pEffect->SetMatrix("g_matWorldViewProj", &matWorldViewProj);
+    assert(hResult == S_OK);
+
+    hResult = g_pEffect->SetMatrix("g_matWorld", &world);
     assert(hResult == S_OK);
 
     for (DWORD i = 0; i < pModel->dwNumMaterials; i++)
@@ -1376,6 +1389,8 @@ void BuildCameraViewMatrix(D3DXMATRIX* pView)
     eye.x = g_cameraDistance * sinf(g_cameraYaw) * cosPitch;
     eye.y = g_cameraDistance * sinf(g_cameraPitch);
     eye.z = -g_cameraDistance * cosf(g_cameraYaw) * cosPitch;
+
+    g_cameraEye = eye;
 
     D3DXMatrixLookAtLH(pView, &eye, &target, &up);
 }
