@@ -14,11 +14,17 @@
 #include <cassert>
 #include <crtdbg.h>
 #include <vector>
+#include <cmath>
 
 #define SAFE_RELEASE(p) { if (p) { (p)->Release(); (p) = NULL; } }
 
 const int WINDOW_SIZE_W = 1600;
 const int WINDOW_SIZE_H = 900;
+const int CLOTH_VERTEX_COUNT_X = 16;
+const int CLOTH_VERTEX_COUNT_Z = 16;
+const float CLOTH_SIZE = 4.0f;
+const float CLOTH_START_Y = 1.1f;
+const float SPHERE_DISPLAY_RADIUS = 1.0f;
 
 LPDIRECT3D9 g_pD3D = NULL;
 LPDIRECT3DDEVICE9 g_pd3dDevice = NULL;
@@ -37,10 +43,31 @@ struct MeshModel
 MeshModel g_sphereModel { };
 MeshModel g_clothModel { };
 
+struct ClothParticle
+{
+    D3DXVECTOR3 position;
+    D3DXVECTOR3 previousPosition;
+    D3DXVECTOR3 normal;
+    bool bFixed;
+};
+
+std::vector<ClothParticle> g_clothParticles;
+DWORD g_clothPositionOffset = 0;
+DWORD g_clothNormalOffset = 0;
+DWORD g_clothVertexStride = 0;
+bool g_bClothReady = false;
+
 static void TextDraw(LPD3DXFONT pFont, TCHAR* text, int X, int Y);
 static void LoadMeshModel(LPCTSTR pFileName, MeshModel* pModel);
 static void CleanupMeshModel(MeshModel* pModel);
 static void DrawMeshModel(MeshModel* pModel, const D3DXMATRIX& world, const D3DXMATRIX& viewProj);
+static void InitializeClothSimulation();
+static void UpdateClothSimulation();
+static void SatisfyClothConstraint(int indexA, int indexB);
+static void ApplySphereCollision(D3DXVECTOR3* pPosition);
+static void UpdateClothNormals();
+static void WriteClothMeshVertices();
+static int GetClothIndex(int x, int z);
 static void InitD3D(HWND hWnd);
 static void Cleanup();
 static void Render();
@@ -216,6 +243,7 @@ void InitD3D(HWND hWnd)
 
     LoadMeshModel(_T("sphere.x"), &g_sphereModel);
     LoadMeshModel(_T("cloth16x16.x"), &g_clothModel);
+    InitializeClothSimulation();
 
     hResult = D3DXCreateEffectFromFile(g_pd3dDevice,
                                        _T("simple.fx"),
@@ -311,6 +339,8 @@ void Cleanup()
 {
     CleanupMeshModel(&g_clothModel);
     CleanupMeshModel(&g_sphereModel);
+    g_clothParticles.clear();
+    g_bClothReady = false;
     SAFE_RELEASE(g_pEffect);
     SAFE_RELEASE(g_pFont);
     SAFE_RELEASE(g_pd3dDevice);
@@ -337,8 +367,10 @@ void Render()
     D3DXVECTOR3 vec3(0, 1, 0);
     D3DXMatrixLookAtLH(&View, &vec1, &vec2, &vec3);
     matViewProj = View * Proj;
-    D3DXMatrixIdentity(&matSphereWorld);
-    D3DXMatrixTranslation(&matClothWorld, 0.0f, 0.6f, 0.0f);
+    UpdateClothSimulation();
+
+    D3DXMatrixScaling(&matSphereWorld, 2.0f, 2.0f, 2.0f);
+    D3DXMatrixIdentity(&matClothWorld);
 
     hResult = g_pd3dDevice->Clear(0,
                                   NULL,
@@ -401,6 +433,243 @@ void DrawMeshModel(MeshModel* pModel, const D3DXMATRIX& world, const D3DXMATRIX&
         hResult = pModel->pMesh->DrawSubset(i);
         assert(hResult == S_OK);
     }
+}
+
+void InitializeClothSimulation()
+{
+    HRESULT hResult = E_FAIL;
+    D3DVERTEXELEMENT9 declaration[MAX_FVF_DECL_SIZE];
+
+    hResult = g_clothModel.pMesh->GetDeclaration(declaration);
+    assert(hResult == S_OK);
+
+    g_clothPositionOffset = 0;
+    g_clothNormalOffset = 0;
+
+    for (int i = 0; declaration[i].Stream != 0xFF; i++)
+    {
+        if (declaration[i].Usage == D3DDECLUSAGE_POSITION)
+        {
+            g_clothPositionOffset = declaration[i].Offset;
+        }
+
+        if (declaration[i].Usage == D3DDECLUSAGE_NORMAL)
+        {
+            g_clothNormalOffset = declaration[i].Offset;
+        }
+    }
+
+    g_clothVertexStride = g_clothModel.pMesh->GetNumBytesPerVertex();
+    g_clothParticles.resize(CLOTH_VERTEX_COUNT_X * CLOTH_VERTEX_COUNT_Z);
+
+    float spacing = CLOTH_SIZE / (float)(CLOTH_VERTEX_COUNT_X - 1);
+    float halfSize = CLOTH_SIZE * 0.5f;
+
+    for (int z = 0; z < CLOTH_VERTEX_COUNT_Z; z++)
+    {
+        for (int x = 0; x < CLOTH_VERTEX_COUNT_X; x++)
+        {
+            int index = GetClothIndex(x, z);
+            float positionX = -halfSize + spacing * (float)x;
+            float positionZ = -halfSize + spacing * (float)z;
+
+            g_clothParticles[index].position = D3DXVECTOR3(positionX, CLOTH_START_Y, positionZ);
+            g_clothParticles[index].previousPosition = g_clothParticles[index].position;
+            g_clothParticles[index].normal = D3DXVECTOR3(0.0f, 1.0f, 0.0f);
+            g_clothParticles[index].bFixed = false;
+
+            if (z == 0)
+            {
+                g_clothParticles[index].bFixed = true;
+            }
+        }
+    }
+
+    g_bClothReady = true;
+    UpdateClothNormals();
+    WriteClothMeshVertices();
+}
+
+void UpdateClothSimulation()
+{
+    if (!g_bClothReady)
+    {
+        return;
+    }
+
+    const D3DXVECTOR3 gravity(0.0f, -9.8f, 0.0f);
+    const float deltaTime = 1.0f / 60.0f;
+    const float damping = 0.995f;
+    const int constraintIterations = 8;
+
+    for (auto& particle : g_clothParticles)
+    {
+        if (particle.bFixed)
+        {
+            continue;
+        }
+
+        D3DXVECTOR3 velocity = (particle.position - particle.previousPosition) * damping;
+        D3DXVECTOR3 nextPosition = particle.position + velocity + gravity * deltaTime * deltaTime;
+        particle.previousPosition = particle.position;
+        particle.position = nextPosition;
+        ApplySphereCollision(&particle.position);
+    }
+
+    for (int iteration = 0; iteration < constraintIterations; iteration++)
+    {
+        for (int z = 0; z < CLOTH_VERTEX_COUNT_Z; z++)
+        {
+            for (int x = 0; x < CLOTH_VERTEX_COUNT_X; x++)
+            {
+                if (x + 1 < CLOTH_VERTEX_COUNT_X)
+                {
+                    SatisfyClothConstraint(GetClothIndex(x, z), GetClothIndex(x + 1, z));
+                }
+
+                if (z + 1 < CLOTH_VERTEX_COUNT_Z)
+                {
+                    SatisfyClothConstraint(GetClothIndex(x, z), GetClothIndex(x, z + 1));
+                }
+            }
+        }
+
+        for (auto& particle : g_clothParticles)
+        {
+            ApplySphereCollision(&particle.position);
+        }
+    }
+
+    UpdateClothNormals();
+    WriteClothMeshVertices();
+}
+
+void SatisfyClothConstraint(int indexA, int indexB)
+{
+    float restLength = CLOTH_SIZE / (float)(CLOTH_VERTEX_COUNT_X - 1);
+    ClothParticle& particleA = g_clothParticles[indexA];
+    ClothParticle& particleB = g_clothParticles[indexB];
+    D3DXVECTOR3 delta = particleB.position - particleA.position;
+    float length = D3DXVec3Length(&delta);
+
+    if (length <= 0.0001f)
+    {
+        return;
+    }
+
+    D3DXVECTOR3 correction = delta * ((length - restLength) / length);
+
+    if (!particleA.bFixed && !particleB.bFixed)
+    {
+        particleA.position += correction * 0.5f;
+        particleB.position -= correction * 0.5f;
+    }
+    else if (!particleA.bFixed)
+    {
+        particleA.position += correction;
+    }
+    else if (!particleB.bFixed)
+    {
+        particleB.position -= correction;
+    }
+}
+
+void ApplySphereCollision(D3DXVECTOR3* pPosition)
+{
+    float distance = D3DXVec3Length(pPosition);
+
+    if (distance >= SPHERE_DISPLAY_RADIUS)
+    {
+        return;
+    }
+
+    if (distance <= 0.0001f)
+    {
+        pPosition->x = 0.0f;
+        pPosition->y = SPHERE_DISPLAY_RADIUS;
+        pPosition->z = 0.0f;
+        return;
+    }
+
+    D3DXVECTOR3 normal = *pPosition / distance;
+    *pPosition = normal * SPHERE_DISPLAY_RADIUS;
+}
+
+void UpdateClothNormals()
+{
+    for (auto& particle : g_clothParticles)
+    {
+        particle.normal = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
+    }
+
+    for (int z = 0; z < CLOTH_VERTEX_COUNT_Z - 1; z++)
+    {
+        for (int x = 0; x < CLOTH_VERTEX_COUNT_X - 1; x++)
+        {
+            int indexA = GetClothIndex(x, z);
+            int indexB = GetClothIndex(x + 1, z);
+            int indexC = GetClothIndex(x, z + 1);
+            int indexD = GetClothIndex(x + 1, z + 1);
+            D3DXVECTOR3 normal;
+            D3DXVECTOR3 edgeA;
+            D3DXVECTOR3 edgeB;
+
+            edgeA = g_clothParticles[indexC].position - g_clothParticles[indexA].position;
+            edgeB = g_clothParticles[indexB].position - g_clothParticles[indexA].position;
+            D3DXVec3Cross(&normal, &edgeA, &edgeB);
+            g_clothParticles[indexA].normal += normal;
+            g_clothParticles[indexC].normal += normal;
+            g_clothParticles[indexB].normal += normal;
+
+            edgeA = g_clothParticles[indexC].position - g_clothParticles[indexB].position;
+            edgeB = g_clothParticles[indexD].position - g_clothParticles[indexB].position;
+            D3DXVec3Cross(&normal, &edgeA, &edgeB);
+            g_clothParticles[indexB].normal += normal;
+            g_clothParticles[indexC].normal += normal;
+            g_clothParticles[indexD].normal += normal;
+        }
+    }
+
+    for (auto& particle : g_clothParticles)
+    {
+        float length = D3DXVec3Length(&particle.normal);
+
+        if (length <= 0.0001f)
+        {
+            particle.normal = D3DXVECTOR3(0.0f, 1.0f, 0.0f);
+        }
+        else
+        {
+            D3DXVec3Normalize(&particle.normal, &particle.normal);
+        }
+    }
+}
+
+void WriteClothMeshVertices()
+{
+    HRESULT hResult = E_FAIL;
+    BYTE* pVertices = NULL;
+
+    hResult = g_clothModel.pMesh->LockVertexBuffer(0, (void**)&pVertices);
+    assert(hResult == S_OK);
+
+    for (DWORD i = 0; i < g_clothModel.pMesh->GetNumVertices(); i++)
+    {
+        BYTE* pVertex = pVertices + g_clothVertexStride * i;
+        D3DXVECTOR3* pPosition = (D3DXVECTOR3*)(pVertex + g_clothPositionOffset);
+        D3DXVECTOR3* pNormal = (D3DXVECTOR3*)(pVertex + g_clothNormalOffset);
+
+        *pPosition = g_clothParticles[i].position;
+        *pNormal = g_clothParticles[i].normal;
+    }
+
+    hResult = g_clothModel.pMesh->UnlockVertexBuffer();
+    assert(hResult == S_OK);
+}
+
+int GetClothIndex(int x, int z)
+{
+    return z * CLOTH_VERTEX_COUNT_X + x;
 }
 
 LRESULT WINAPI MsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
