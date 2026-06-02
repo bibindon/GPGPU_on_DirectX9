@@ -9,6 +9,7 @@
 
 #include <d3d9.h>
 #include <d3dx9.h>
+#include <windowsx.h>
 #include <string>
 #include <tchar.h>
 #include <cassert>
@@ -25,12 +26,21 @@ const int CLOTH_VERTEX_COUNT_Z = 16;
 const float CLOTH_SIZE = 4.0f;
 const float CLOTH_START_Y = 1.1f;
 const float SPHERE_DISPLAY_RADIUS = 1.0f;
+const float CAMERA_MIN_PITCH = -1.3f;
+const float CAMERA_MAX_PITCH = 1.3f;
+const float CAMERA_MIN_DISTANCE = 2.0f;
+const float CAMERA_MAX_DISTANCE = 20.0f;
 
 LPDIRECT3D9 g_pD3D = NULL;
 LPDIRECT3DDEVICE9 g_pd3dDevice = NULL;
 LPD3DXFONT g_pFont = NULL;
 LPD3DXEFFECT g_pEffect = NULL;
 bool g_bClose = false;
+bool g_bCameraDragging = false;
+POINT g_lastMousePosition { };
+float g_cameraYaw = 0.0f;
+float g_cameraPitch = 0.35f;
+float g_cameraDistance = 8.5f;
 
 struct MeshModel
 {
@@ -68,6 +78,7 @@ static void ApplySphereCollision(D3DXVECTOR3* pPosition);
 static void UpdateClothNormals();
 static void WriteClothMeshVertices();
 static int GetClothIndex(int x, int z);
+static void BuildCameraViewMatrix(D3DXMATRIX* pView);
 static void InitD3D(HWND hWnd);
 static void Cleanup();
 static void Render();
@@ -362,10 +373,7 @@ void Render()
                                1.0f,
                                10000.0f);
 
-    D3DXVECTOR3 vec1(0, 3, -8);
-    D3DXVECTOR3 vec2(0, 0, 0);
-    D3DXVECTOR3 vec3(0, 1, 0);
-    D3DXMatrixLookAtLH(&View, &vec1, &vec2, &vec3);
+    BuildCameraViewMatrix(&View);
     matViewProj = View * Proj;
     UpdateClothSimulation();
 
@@ -477,11 +485,6 @@ void InitializeClothSimulation()
             g_clothParticles[index].previousPosition = g_clothParticles[index].position;
             g_clothParticles[index].normal = D3DXVECTOR3(0.0f, 1.0f, 0.0f);
             g_clothParticles[index].bFixed = false;
-
-            if (z == 0)
-            {
-                g_clothParticles[index].bFixed = true;
-            }
         }
     }
 
@@ -672,10 +675,83 @@ int GetClothIndex(int x, int z)
     return z * CLOTH_VERTEX_COUNT_X + x;
 }
 
+void BuildCameraViewMatrix(D3DXMATRIX* pView)
+{
+    D3DXVECTOR3 target(0.0f, 0.0f, 0.0f);
+    D3DXVECTOR3 up(0.0f, 1.0f, 0.0f);
+    float cosPitch = cosf(g_cameraPitch);
+    D3DXVECTOR3 eye;
+
+    eye.x = g_cameraDistance * sinf(g_cameraYaw) * cosPitch;
+    eye.y = g_cameraDistance * sinf(g_cameraPitch);
+    eye.z = -g_cameraDistance * cosf(g_cameraYaw) * cosPitch;
+
+    D3DXMatrixLookAtLH(pView, &eye, &target, &up);
+}
+
 LRESULT WINAPI MsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     switch (msg)
     {
+    case WM_LBUTTONDOWN:
+    {
+        g_bCameraDragging = true;
+        g_lastMousePosition.x = GET_X_LPARAM(lParam);
+        g_lastMousePosition.y = GET_Y_LPARAM(lParam);
+        SetCapture(hWnd);
+        return 0;
+    }
+    case WM_LBUTTONUP:
+    {
+        g_bCameraDragging = false;
+        ReleaseCapture();
+        return 0;
+    }
+    case WM_MOUSEMOVE:
+    {
+        if (g_bCameraDragging)
+        {
+            POINT currentPosition;
+            currentPosition.x = GET_X_LPARAM(lParam);
+            currentPosition.y = GET_Y_LPARAM(lParam);
+
+            int deltaX = currentPosition.x - g_lastMousePosition.x;
+            int deltaY = currentPosition.y - g_lastMousePosition.y;
+            g_cameraYaw += (float)deltaX * 0.01f;
+            g_cameraPitch += (float)deltaY * 0.01f;
+
+            if (g_cameraPitch < CAMERA_MIN_PITCH)
+            {
+                g_cameraPitch = CAMERA_MIN_PITCH;
+            }
+
+            if (g_cameraPitch > CAMERA_MAX_PITCH)
+            {
+                g_cameraPitch = CAMERA_MAX_PITCH;
+            }
+
+            g_lastMousePosition = currentPosition;
+        }
+
+        return 0;
+    }
+    case WM_MOUSEWHEEL:
+    {
+        int wheelDelta = GET_WHEEL_DELTA_WPARAM(wParam);
+        g_cameraDistance -= (float)wheelDelta * 0.01f;
+
+        if (g_cameraDistance < CAMERA_MIN_DISTANCE)
+        {
+            g_cameraDistance = CAMERA_MIN_DISTANCE;
+        }
+
+        if (g_cameraDistance > CAMERA_MAX_DISTANCE)
+        {
+            g_cameraDistance = CAMERA_MAX_DISTANCE;
+        }
+
+        return 0;
+    }
     case WM_DESTROY:
     {
         PostQuitMessage(0);
