@@ -36,6 +36,9 @@ const float CAMERA_MAX_DISTANCE = 20.0f;
 const int SETTINGS_COMBO_ID = 1001;
 const int SETTINGS_RESET_BUTTON_ID = 1002;
 const int SETTINGS_CLOTH_COMBO_ID = 1003;
+const int SETTINGS_STIFFNESS_COMBO_ID = 1004;
+const int g_clothConstraintIterationValues[] = { 2, 4, 8, 16, 32 };
+int g_clothConstraintIterations = 8;
 
 enum SimulationMode
 {
@@ -51,6 +54,7 @@ LPD3DXEFFECT g_pEffect = NULL;
 HWND g_hSettingsWnd = NULL;
 HWND g_hSimulationCombo = NULL;
 HWND g_hClothCombo = NULL;
+HWND g_hStiffnessCombo = NULL;
 LPDIRECT3DTEXTURE9 g_pGpuCurrentPositionTexture = NULL;
 LPDIRECT3DTEXTURE9 g_pGpuPreviousPositionTexture = NULL;
 LPDIRECT3DTEXTURE9 g_pGpuNextPositionTexture = NULL;
@@ -419,6 +423,7 @@ void Cleanup()
         g_hSettingsWnd = NULL;
         g_hSimulationCombo = NULL;
         g_hClothCombo = NULL;
+        g_hStiffnessCombo = NULL;
     }
 
     CleanupGpuClothResources();
@@ -644,11 +649,10 @@ void UpdateClothSimulationCpuBody(bool bUseOpenMP)
 
 void ApplyClothConstraints()
 {
-    const int constraintIterations = 8;
     const float structuralRestLength = CLOTH_SIZE / (float)(g_clothVertexCountX - 1);
     const float shearRestLength = structuralRestLength * sqrtf(2.0f);
 
-    for (int iteration = 0; iteration < constraintIterations; iteration++)
+    for (int iteration = 0; iteration < g_clothConstraintIterations; iteration++)
     {
         for (int z = 0; z < g_clothVertexCountZ; z++)
         {
@@ -1426,7 +1430,7 @@ void CreateSettingsWindow(HINSTANCE hInstance)
                                   CW_USEDEFAULT,
                                   CW_USEDEFAULT,
                                   260,
-                                  180,
+                                  220,
                                   NULL,
                                   NULL,
                                   hInstance,
@@ -1496,11 +1500,44 @@ void CreateSettingsWindow(HINSTANCE hInstance)
     SendMessage(g_hClothCombo, CB_ADDSTRING, 0, (LPARAM)_T("128x128"));
     SendMessage(g_hClothCombo, CB_SETCURSEL, 0, 0);
 
+    HWND hStiffnessLabel = CreateWindow(_T("STATIC"),
+                                        _T("Stiffness"),
+                                        WS_CHILD | WS_VISIBLE,
+                                        16,
+                                        90,
+                                        100,
+                                        22,
+                                        g_hSettingsWnd,
+                                        NULL,
+                                        hInstance,
+                                        NULL);
+    assert(hStiffnessLabel != NULL);
+
+    g_hStiffnessCombo = CreateWindow(_T("COMBOBOX"),
+                                     NULL,
+                                     WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
+                                     112,
+                                     86,
+                                     120,
+                                     120,
+                                     g_hSettingsWnd,
+                                     (HMENU)(INT_PTR)SETTINGS_STIFFNESS_COMBO_ID,
+                                     hInstance,
+                                     NULL);
+    assert(g_hStiffnessCombo != NULL);
+
+    SendMessage(g_hStiffnessCombo, CB_ADDSTRING, 0, (LPARAM)_T("2"));
+    SendMessage(g_hStiffnessCombo, CB_ADDSTRING, 0, (LPARAM)_T("4"));
+    SendMessage(g_hStiffnessCombo, CB_ADDSTRING, 0, (LPARAM)_T("8"));
+    SendMessage(g_hStiffnessCombo, CB_ADDSTRING, 0, (LPARAM)_T("16"));
+    SendMessage(g_hStiffnessCombo, CB_ADDSTRING, 0, (LPARAM)_T("32"));
+    SendMessage(g_hStiffnessCombo, CB_SETCURSEL, 2, 0);
+
     HWND hResetButton = CreateWindow(_T("BUTTON"),
                                      _T("リセット"),
                                      WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                                      112,
-                                     86,
+                                     122,
                                      120,
                                      28,
                                      g_hSettingsWnd,
@@ -1618,6 +1655,18 @@ LRESULT WINAPI SettingsMsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam
             return 0;
         }
 
+        if (controlId == SETTINGS_STIFFNESS_COMBO_ID && notification == CBN_SELCHANGE)
+        {
+            LRESULT selectedIndex = SendMessage(g_hStiffnessCombo, CB_GETCURSEL, 0, 0);
+
+            if (selectedIndex >= 0 && selectedIndex < 5)
+            {
+                g_clothConstraintIterations = g_clothConstraintIterationValues[selectedIndex];
+            }
+
+            return 0;
+        }
+
         if (controlId == SETTINGS_RESET_BUTTON_ID && notification == BN_CLICKED)
         {
             InitializeClothSimulation();
@@ -1638,6 +1687,7 @@ LRESULT WINAPI SettingsMsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam
             g_hSettingsWnd = NULL;
             g_hSimulationCombo = NULL;
             g_hClothCombo = NULL;
+            g_hStiffnessCombo = NULL;
         }
 
         return 0;
