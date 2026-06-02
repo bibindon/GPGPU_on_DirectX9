@@ -32,6 +32,7 @@ const float CAMERA_MAX_PITCH = 1.3f;
 const float CAMERA_MIN_DISTANCE = 2.0f;
 const float CAMERA_MAX_DISTANCE = 20.0f;
 const int SETTINGS_COMBO_ID = 1001;
+const int SETTINGS_RESET_BUTTON_ID = 1002;
 
 enum SimulationMode
 {
@@ -52,7 +53,7 @@ POINT g_lastMousePosition { };
 float g_cameraYaw = 0.0f;
 float g_cameraPitch = 0.35f;
 float g_cameraDistance = 8.5f;
-SimulationMode g_simulationMode = SIMULATION_MODE_CPU;
+SimulationMode g_simulationMode = SIMULATION_MODE_CPU_OPENMP;
 
 struct MeshModel
 {
@@ -860,7 +861,7 @@ void CreateSettingsWindow(HINSTANCE hInstance)
                                   CW_USEDEFAULT,
                                   CW_USEDEFAULT,
                                   260,
-                                  120,
+                                  150,
                                   NULL,
                                   NULL,
                                   hInstance,
@@ -897,8 +898,21 @@ void CreateSettingsWindow(HINSTANCE hInstance)
     SendMessage(g_hSimulationCombo, CB_ADDSTRING, 0, (LPARAM)_T("CPU"));
     SendMessage(g_hSimulationCombo, CB_ADDSTRING, 0, (LPARAM)_T("CPU_OPENMP"));
     SendMessage(g_hSimulationCombo, CB_ADDSTRING, 0, (LPARAM)_T("GPU"));
-    SendMessage(g_hSimulationCombo, CB_SETCURSEL, 0, 0);
+    SendMessage(g_hSimulationCombo, CB_SETCURSEL, SIMULATION_MODE_CPU_OPENMP, 0);
     UpdateSimulationModeFromCombo();
+
+    HWND hResetButton = CreateWindow(_T("BUTTON"),
+                                     _T("リセット"),
+                                     WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                                     112,
+                                     52,
+                                     120,
+                                     28,
+                                     g_hSettingsWnd,
+                                     (HMENU)(INT_PTR)SETTINGS_RESET_BUTTON_ID,
+                                     hInstance,
+                                     NULL);
+    assert(hResetButton != NULL);
 
     ShowWindow(g_hSettingsWnd, SW_SHOWDEFAULT);
     UpdateWindow(g_hSettingsWnd);
@@ -990,6 +1004,12 @@ LRESULT WINAPI SettingsMsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam
         if (controlId == SETTINGS_COMBO_ID && notification == CBN_SELCHANGE)
         {
             UpdateSimulationModeFromCombo();
+            return 0;
+        }
+
+        if (controlId == SETTINGS_RESET_BUTTON_ID && notification == BN_CLICKED)
+        {
+            InitializeClothSimulation();
             return 0;
         }
 
