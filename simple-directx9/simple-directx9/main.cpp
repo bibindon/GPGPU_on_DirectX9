@@ -41,8 +41,8 @@ const int SETTINGS_BEND_COMBO_ID = 1005;
 const int SETTINGS_GRAVITY_COMBO_ID = 1006;
 const int g_clothConstraintIterationValues[] = { 2, 4, 8, 16, 32 };
 int g_clothConstraintIterations = 8;
-const float g_clothBendStiffnessValues[] = { 0.0f, 1.0f, 2.0f, 3.0f, 5.0f };
-float g_clothBendStiffness = 0.5f;
+const float g_clothBendStiffnessValues[] = { 0.0f, 0.02f, 0.05f, 0.1f, 0.2f };
+float g_clothBendStiffness = 0.05f;
 const float g_clothGravityValues[] = { 0.0f, 0.98f, 2.45f, 4.9f, 9.8f };
 float g_clothGravity = 9.8f;
 
@@ -674,7 +674,12 @@ void ApplyClothConstraints()
 {
     const float structuralRestLength = CLOTH_SIZE / (float)(g_clothVertexCountX - 1);
     const float shearRestLength = structuralRestLength * sqrtf(2.0f);
-    const float bendRestLength = structuralRestLength * 2.0f;
+    const float bendRestLength2 = structuralRestLength * 2.0f;
+    const float bendRestLength4 = structuralRestLength * 4.0f;
+    const float bendRestLength8 = structuralRestLength * 8.0f;
+    const float bendStiffness2 = g_clothBendStiffness;
+    const float bendStiffness4 = g_clothBendStiffness * 0.35f;
+    const float bendStiffness8 = g_clothBendStiffness * 0.15f;
 
     for (int iteration = 0; iteration < g_clothConstraintIterations; iteration++)
     {
@@ -700,12 +705,32 @@ void ApplyClothConstraints()
 
                 if (x + 2 < g_clothVertexCountX)
                 {
-                    SatisfyClothConstraint(GetClothIndex(x, z), GetClothIndex(x + 2, z), bendRestLength, g_clothBendStiffness);
+                    SatisfyClothConstraint(GetClothIndex(x, z), GetClothIndex(x + 2, z), bendRestLength2, bendStiffness2);
                 }
 
                 if (z + 2 < g_clothVertexCountZ)
                 {
-                    SatisfyClothConstraint(GetClothIndex(x, z), GetClothIndex(x, z + 2), bendRestLength, g_clothBendStiffness);
+                    SatisfyClothConstraint(GetClothIndex(x, z), GetClothIndex(x, z + 2), bendRestLength2, bendStiffness2);
+                }
+
+                if (x + 4 < g_clothVertexCountX)
+                {
+                    SatisfyClothConstraint(GetClothIndex(x, z), GetClothIndex(x + 4, z), bendRestLength4, bendStiffness4);
+                }
+
+                if (z + 4 < g_clothVertexCountZ)
+                {
+                    SatisfyClothConstraint(GetClothIndex(x, z), GetClothIndex(x, z + 4), bendRestLength4, bendStiffness4);
+                }
+
+                if (x + 8 < g_clothVertexCountX)
+                {
+                    SatisfyClothConstraint(GetClothIndex(x, z), GetClothIndex(x + 8, z), bendRestLength8, bendStiffness8);
+                }
+
+                if (z + 8 < g_clothVertexCountZ)
+                {
+                    SatisfyClothConstraint(GetClothIndex(x, z), GetClothIndex(x, z + 8), bendRestLength8, bendStiffness8);
                 }
             }
         }
@@ -1598,11 +1623,11 @@ void CreateSettingsWindow(HINSTANCE hInstance)
                                 NULL);
     assert(g_hBendCombo != NULL);
 
-    SendMessage(g_hBendCombo, CB_ADDSTRING, 0, (LPARAM)_T("0.0"));
-    SendMessage(g_hBendCombo, CB_ADDSTRING, 0, (LPARAM)_T("1.0"));
-    SendMessage(g_hBendCombo, CB_ADDSTRING, 0, (LPARAM)_T("2.0"));
-    SendMessage(g_hBendCombo, CB_ADDSTRING, 0, (LPARAM)_T("3.0"));
-    SendMessage(g_hBendCombo, CB_ADDSTRING, 0, (LPARAM)_T("5.0"));
+    SendMessage(g_hBendCombo, CB_ADDSTRING, 0, (LPARAM)_T("0.00"));
+    SendMessage(g_hBendCombo, CB_ADDSTRING, 0, (LPARAM)_T("0.02"));
+    SendMessage(g_hBendCombo, CB_ADDSTRING, 0, (LPARAM)_T("0.05"));
+    SendMessage(g_hBendCombo, CB_ADDSTRING, 0, (LPARAM)_T("0.10"));
+    SendMessage(g_hBendCombo, CB_ADDSTRING, 0, (LPARAM)_T("0.20"));
     SendMessage(g_hBendCombo, CB_SETCURSEL, 2, 0);
 
     HWND hGravityLabel = CreateWindow(_T("STATIC"),
