@@ -55,6 +55,7 @@ LPDIRECT3DTEXTURE9 g_pGpuCurrentPositionTexture = NULL;
 LPDIRECT3DTEXTURE9 g_pGpuPreviousPositionTexture = NULL;
 LPDIRECT3DTEXTURE9 g_pGpuNextPositionTexture = NULL;
 LPDIRECT3DSURFACE9 g_pGpuReadbackSurface = NULL;
+LPDIRECT3DTEXTURE9 g_pGpuUploadStagingTexture = NULL;
 bool g_bClose = false;
 bool g_bCameraDragging = false;
 POINT g_lastMousePosition { };
@@ -755,11 +756,22 @@ void CreateGpuClothResources()
                                                         NULL);
     assert(hResult == S_OK);
 
+    hResult = g_pd3dDevice->CreateTexture(g_clothVertexCountX,
+                                          g_clothVertexCountZ,
+                                          1,
+                                          0,
+                                          D3DFMT_A32B32G32R32F,
+                                          D3DPOOL_SYSTEMMEM,
+                                          &g_pGpuUploadStagingTexture,
+                                          NULL);
+    assert(hResult == S_OK);
+
     UploadGpuClothTextures();
 }
 
 void CleanupGpuClothResources()
 {
+    SAFE_RELEASE(g_pGpuUploadStagingTexture);
     SAFE_RELEASE(g_pGpuReadbackSurface);
     SAFE_RELEASE(g_pGpuNextPositionTexture);
     SAFE_RELEASE(g_pGpuPreviousPositionTexture);
@@ -808,16 +820,31 @@ void UploadGpuClothTexture(LPDIRECT3DTEXTURE9 pTexture, bool bUsePreviousPositio
     hResult = pTexture->GetSurfaceLevel(0, &pSurface);
     assert(hResult == S_OK);
 
-    hResult = D3DXLoadSurfaceFromMemory(pSurface,
-                                        NULL,
-                                        NULL,
-                                        texels.data(),
-                                        D3DFMT_A32B32G32R32F,
-                                        sizeof(GpuClothTexel) * g_clothVertexCountX,
-                                        NULL,
-                                        NULL,
-                                        D3DX_FILTER_NONE,
-                                        0);
+    {
+        LPDIRECT3DSURFACE9 pStagingSurface = NULL;
+        D3DLOCKED_RECT lockedRect { };
+
+        hResult = g_pGpuUploadStagingTexture->GetSurfaceLevel(0, &pStagingSurface);
+        assert(hResult == S_OK);
+
+        hResult = pStagingSurface->LockRect(&lockedRect, NULL, 0);
+        assert(hResult == S_OK);
+
+        for (int z = 0; z < g_clothVertexCountZ; z++)
+        {
+            BYTE* pDestRow = (BYTE*)lockedRect.pBits + lockedRect.Pitch * z;
+            BYTE* pSrcRow = (BYTE*)texels.data() + sizeof(GpuClothTexel) * g_clothVertexCountX * z;
+            memcpy(pDestRow, pSrcRow, sizeof(GpuClothTexel) * g_clothVertexCountX);
+        }
+
+        hResult = pStagingSurface->UnlockRect();
+        assert(hResult == S_OK);
+
+        SAFE_RELEASE(pStagingSurface);
+    }
+
+    hResult = g_pd3dDevice->UpdateTexture(g_pGpuUploadStagingTexture,
+                                          pTexture);
     assert(hResult == S_OK);
 
     SAFE_RELEASE(pSurface);
