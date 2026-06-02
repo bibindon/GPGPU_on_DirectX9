@@ -38,10 +38,13 @@ const int SETTINGS_RESET_BUTTON_ID = 1002;
 const int SETTINGS_CLOTH_COMBO_ID = 1003;
 const int SETTINGS_STIFFNESS_COMBO_ID = 1004;
 const int SETTINGS_BEND_COMBO_ID = 1005;
+const int SETTINGS_GRAVITY_COMBO_ID = 1006;
 const int g_clothConstraintIterationValues[] = { 2, 4, 8, 16, 32 };
 int g_clothConstraintIterations = 8;
-const float g_clothBendStiffnessValues[] = { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f };
+const float g_clothBendStiffnessValues[] = { 0.0f, 1.0f, 2.0f, 3.0f, 5.0f };
 float g_clothBendStiffness = 0.5f;
+const float g_clothGravityValues[] = { 0.0f, 0.98f, 2.45f, 4.9f, 9.8f };
+float g_clothGravity = 9.8f;
 
 enum SimulationMode
 {
@@ -59,6 +62,7 @@ HWND g_hSimulationCombo = NULL;
 HWND g_hClothCombo = NULL;
 HWND g_hStiffnessCombo = NULL;
 HWND g_hBendCombo = NULL;
+HWND g_hGravityCombo = NULL;
 LPDIRECT3DTEXTURE9 g_pGpuCurrentPositionTexture = NULL;
 LPDIRECT3DTEXTURE9 g_pGpuPreviousPositionTexture = NULL;
 LPDIRECT3DTEXTURE9 g_pGpuNextPositionTexture = NULL;
@@ -430,6 +434,7 @@ void Cleanup()
         g_hClothCombo = NULL;
         g_hStiffnessCombo = NULL;
         g_hBendCombo = NULL;
+        g_hGravityCombo = NULL;
     }
 
     CleanupGpuClothResources();
@@ -620,7 +625,7 @@ void UpdateClothSimulation()
 
 void UpdateClothSimulationCpuBody(bool bUseOpenMP)
 {
-    const D3DXVECTOR3 gravity(0.0f, -9.8f, 0.0f);
+    const D3DXVECTOR3 gravity(0.0f, -g_clothGravity, 0.0f);
     const float deltaTime = 1.0f / 60.0f;
     const float damping = 0.995f;
 
@@ -1112,6 +1117,9 @@ void RenderGpuClothPass()
     hResult = g_pEffect->SetFloat("g_gpuCollisionRadius", CLOTH_COLLISION_RADIUS);
     assert(hResult == S_OK);
 
+    hResult = g_pEffect->SetFloat("g_gpuGravity", g_clothGravity);
+    assert(hResult == S_OK);
+
     hResult = g_pd3dDevice->BeginScene();
     assert(hResult == S_OK);
 
@@ -1461,7 +1469,7 @@ void CreateSettingsWindow(HINSTANCE hInstance)
                                   CW_USEDEFAULT,
                                   CW_USEDEFAULT,
                                   260,
-                                  260,
+                                  280,
                                   NULL,
                                   NULL,
                                   hInstance,
@@ -1590,18 +1598,51 @@ void CreateSettingsWindow(HINSTANCE hInstance)
                                 NULL);
     assert(g_hBendCombo != NULL);
 
-    SendMessage(g_hBendCombo, CB_ADDSTRING, 0, (LPARAM)_T("0.00"));
-    SendMessage(g_hBendCombo, CB_ADDSTRING, 0, (LPARAM)_T("0.25"));
-    SendMessage(g_hBendCombo, CB_ADDSTRING, 0, (LPARAM)_T("0.50"));
-    SendMessage(g_hBendCombo, CB_ADDSTRING, 0, (LPARAM)_T("0.75"));
-    SendMessage(g_hBendCombo, CB_ADDSTRING, 0, (LPARAM)_T("1.00"));
+    SendMessage(g_hBendCombo, CB_ADDSTRING, 0, (LPARAM)_T("0.0"));
+    SendMessage(g_hBendCombo, CB_ADDSTRING, 0, (LPARAM)_T("1.0"));
+    SendMessage(g_hBendCombo, CB_ADDSTRING, 0, (LPARAM)_T("2.0"));
+    SendMessage(g_hBendCombo, CB_ADDSTRING, 0, (LPARAM)_T("3.0"));
+    SendMessage(g_hBendCombo, CB_ADDSTRING, 0, (LPARAM)_T("5.0"));
     SendMessage(g_hBendCombo, CB_SETCURSEL, 2, 0);
+
+    HWND hGravityLabel = CreateWindow(_T("STATIC"),
+                                      _T("Gravity"),
+                                      WS_CHILD | WS_VISIBLE,
+                                      16,
+                                      162,
+                                      100,
+                                      22,
+                                      g_hSettingsWnd,
+                                      NULL,
+                                      hInstance,
+                                      NULL);
+    assert(hGravityLabel != NULL);
+
+    g_hGravityCombo = CreateWindow(_T("COMBOBOX"),
+                                   NULL,
+                                   WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
+                                   112,
+                                   158,
+                                   120,
+                                   120,
+                                   g_hSettingsWnd,
+                                   (HMENU)(INT_PTR)SETTINGS_GRAVITY_COMBO_ID,
+                                   hInstance,
+                                   NULL);
+    assert(g_hGravityCombo != NULL);
+
+    SendMessage(g_hGravityCombo, CB_ADDSTRING, 0, (LPARAM)_T("0.00"));
+    SendMessage(g_hGravityCombo, CB_ADDSTRING, 0, (LPARAM)_T("0.98"));
+    SendMessage(g_hGravityCombo, CB_ADDSTRING, 0, (LPARAM)_T("2.45"));
+    SendMessage(g_hGravityCombo, CB_ADDSTRING, 0, (LPARAM)_T("4.90"));
+    SendMessage(g_hGravityCombo, CB_ADDSTRING, 0, (LPARAM)_T("9.80"));
+    SendMessage(g_hGravityCombo, CB_SETCURSEL, 2, 0);
 
     HWND hResetButton = CreateWindow(_T("BUTTON"),
                                      _T("リセット"),
                                      WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                                      112,
-                                     158,
+                                     194,
                                      120,
                                      28,
                                      g_hSettingsWnd,
@@ -1743,6 +1784,18 @@ LRESULT WINAPI SettingsMsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam
             return 0;
         }
 
+        if (controlId == SETTINGS_GRAVITY_COMBO_ID && notification == CBN_SELCHANGE)
+        {
+            LRESULT selectedIndex = SendMessage(g_hGravityCombo, CB_GETCURSEL, 0, 0);
+
+            if (selectedIndex >= 0 && selectedIndex < 5)
+            {
+                g_clothGravity = g_clothGravityValues[selectedIndex];
+            }
+
+            return 0;
+        }
+
         if (controlId == SETTINGS_RESET_BUTTON_ID && notification == BN_CLICKED)
         {
             InitializeClothSimulation();
@@ -1765,6 +1818,7 @@ LRESULT WINAPI SettingsMsgProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam
             g_hClothCombo = NULL;
             g_hStiffnessCombo = NULL;
             g_hBendCombo = NULL;
+            g_hGravityCombo = NULL;
         }
 
         return 0;

@@ -36,6 +36,7 @@ sampler g_gpuPreviousPositionSampler = sampler_state {
 float g_gpuDeltaTime = 0.0166667f;
 float g_gpuDamping = 0.995f;
 float g_gpuCollisionRadius = 1.1f;
+float g_gpuGravity = 9.8f;
 
 void VertexShader1(in  float4 inPosition  : POSITION,
                    in  float4 inNormal    : NORMAL0,
@@ -83,7 +84,7 @@ void GpuClothUpdatePixelShader(in float2 inTexCood : TEXCOORD0,
 {
     float3 currentPosition = tex2D(g_gpuCurrentPositionSampler, inTexCood).xyz;
     float3 previousPosition = tex2D(g_gpuPreviousPositionSampler, inTexCood).xyz;
-    float3 gravity = float3(0.0f, -9.8f, 0.0f);
+    float3 gravity = float3(0.0f, -g_gpuGravity, 0.0f);
     float3 velocity = (currentPosition - previousPosition) * g_gpuDamping;
     float3 nextPosition = currentPosition + velocity + gravity * g_gpuDeltaTime * g_gpuDeltaTime;
     float distanceFromSphereCenter = length(nextPosition);
